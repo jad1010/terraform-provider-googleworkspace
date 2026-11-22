@@ -165,7 +165,7 @@ func (c *apiClient) loadAndValidate(ctx context.Context) diag.Diagnostics {
 					Severity: diag.Error,
 					Summary:  "service_account is required to impersonate a user with the access_token authentication.",
 					Detail: fmt.Sprintf("The provider must impersonate %q, and access_token is set. "+
-						"Gmail resources (googleworkspace_gmail_send_as_alias, googleworkspace_user_delegate) always impersonate the mailbox owner. "+
+						"Gmail resources (googleworkspace_gmail_send_as_alias, googleworkspace_gmail_user_settings, googleworkspace_user_delegate) always impersonate the mailbox owner. "+
 						"Set service_account to a service account that has domain-wide delegation for the oauth_scopes, "+
 						"and grant the principal of access_token the Service Account Token Creator role "+
 						"(roles/iam.serviceAccountTokenCreator) on that service account. "+
