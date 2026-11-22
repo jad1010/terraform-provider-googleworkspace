@@ -191,6 +191,7 @@ func configure(version string, p *schema.Provider) func(context.Context, *schema
 			licensingCustomer:      &licensingCustomerCache{},
 			licenseAssignmentLists: &licenseAssignmentListCache{},
 			directoryLookups:       &directoryLookupState{},
+			chromePolicySchemas:    newChromePolicySchemaStore(),
 		}
 
 		// Get access token

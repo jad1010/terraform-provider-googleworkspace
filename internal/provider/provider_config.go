@@ -65,6 +65,10 @@ type apiClient struct {
 	// lookups of the license resources (see optionalLicenseDirectoryUser). It
 	// is a pointer for the same reason, and nil means no memory.
 	directoryLookups *directoryLookupState
+
+	// chromePolicySchemas holds the Chrome policy schemas from the API for all operations of the provider. It is a
+	// pointer, so that copies of the client share it. If it is nil, each operation gets the schemas again.
+	chromePolicySchemas *chromePolicySchemaStore
 }
 
 type directoryLookupState struct {

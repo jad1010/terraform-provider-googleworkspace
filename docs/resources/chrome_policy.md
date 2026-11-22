@@ -4,11 +4,19 @@ page_title: "googleworkspace_chrome_policy Resource - terraform-provider-googlew
 subcategory: ""
 description: |-
   Chrome Policy resource in the Terraform Googleworkspace provider. Currently only supports policies not requiring additionalTargetKeys. Chrome Policy Schema resides under the https://www.googleapis.com/auth/chrome.management.policy client scope.
+  Create and update wait until the written values are visible in the API, up to the create and update timeouts (5 minutes by default). The write can be sent again: at half of that time if the values are not visible, and when a new value that differs from the configuration is seen, to confirm it. A value from another writer is overwritten only if that write succeeds and the API applies it. The apply can show these warnings:
+  "Chrome Policy values are not visible yet": the values were not visible at the timeout. The state keeps the configured values, and the next plan shows a change if the values are still not set."Chrome Policy values did not change": a policy still has the value from before the write, also after the write was sent again. Nothing is recorded, and the next plan shows a change."Chrome Policy values differ from the configuration": the API stores another form of the configured values (for example, a normalized value). The provider records that form in applied_values, and the plan shows no change while the API values and the configured values stay the same.
 ---
 
 # googleworkspace_chrome_policy (Resource)
 
 Chrome Policy resource in the Terraform Googleworkspace provider. Currently only supports policies not requiring additionalTargetKeys. Chrome Policy Schema resides under the `https://www.googleapis.com/auth/chrome.management.policy` client scope.
+
+Create and update wait until the written values are visible in the API, up to the `create` and `update` timeouts (5 minutes by default). The write can be sent again: at half of that time if the values are not visible, and when a new value that differs from the configuration is seen, to confirm it. A value from another writer is overwritten only if that write succeeds and the API applies it. The apply can show these warnings:
+
+* "Chrome Policy values are not visible yet": the values were not visible at the timeout. The state keeps the configured values, and the next plan shows a change if the values are still not set.
+* "Chrome Policy values did not change": a policy still has the value from before the write, also after the write was sent again. Nothing is recorded, and the next plan shows a change.
+* "Chrome Policy values differ from the configuration": the API stores another form of the configured values (for example, a normalized value). The provider records that form in `applied_values`, and the plan shows no change while the API values and the configured values stay the same.
 
 ## Example Usage
 
@@ -40,8 +48,13 @@ resource "googleworkspace_chrome_policy" "example" {
 - `org_unit_id` (String) The target org unit on which this policy is applied.
 - `policies` (Block List, Min: 1) Policies to set for the org unit (see [below for nested schema](#nestedblock--policies))
 
+### Optional
+
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+
 ### Read-Only
 
+- `applied_values` (Map of String) The values that the API stored for a policy after the last write, by schema name, when they differ from the configured values (for example, values that the API normalized). The provider sets this attribute. While the API values and the configured values do not change, the plan shows no change for these policies.
 - `id` (String) The ID of this resource.
 
 <a id="nestedblock--policies"></a>
@@ -51,3 +64,12 @@ Required:
 
 - `schema_name` (String) The full qualified name of the policy schema.
 - `schema_values` (Map of String) JSON encoded map that represents key/value pairs that correspond to the given schema.
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String)
+- `update` (String)
