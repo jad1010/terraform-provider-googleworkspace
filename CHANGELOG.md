@@ -23,14 +23,18 @@ FEATURES:
 
 IMPROVEMENTS:
 
-* directory: `googleworkspace_user` now reports a missing password at plan time on create, not at apply time. A new user needs `password` or `password_wo`. An imported user can omit both
 * directory: `googleworkspace_user` shows a warning that suggests `password_wo` when the configuration sets `password`. The warning shows only with Terraform 1.11 or later, which supports write-only arguments. It also shows when `password` gets its value from a variable, even if that value can be null
+* directory: `googleworkspace_user` now checks `primary_email` at plan time. A value without text before and after its last `@`, or a value with whitespace, fails validation. The check is loose and accepts valid addresses, such as plus addressing and subdomains. The API still does the full check. `on_delete_data_transfer.new_data_owner_email` is not checked, because it also accepts a unique user ID
+* directory: `googleworkspace_user` now reports a missing password at plan time on create, not at apply time. A new user needs `password` or `password_wo`. An imported user can omit both
 
 BUG FIXES:
 
 * gmail: `googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` now work with `access_token` and `service_account` authentication instead of failing with "Error 400: Precondition check failed" ([#39](https://github.com/SamuZad/terraform-provider-googleworkspace/issues/39))
 * gmail: `googleworkspace_gmail_send_as_alias` now sends the mailbox owner's address (`primary_email`) as the Gmail user ID instead of `me`. With credentials that cannot impersonate a user, such as `gcloud` user application default credentials, the old read, update and delete calls acted on the send-as aliases of the caller's own mailbox (create already failed with such credentials); they now fail with a delegation error
 * directory: `googleworkspace_user` now sends `hash_function` with each new password on update. Before, a changed hashed password was sent without its hash format
+* directory: `relations.type` on `googleworkspace_user` now accepts `spouse`. The documentation and the API list `spouse`, but the validation rejected it
+* directory: a `languages` entry with `custom_language` on `googleworkspace_user` no longer sends `language_code` and `preference`. Before, the provider always sent their defaults (`en` and `preferred`), which the API does not accept together with a custom language. When an entry sets `custom_language` in the configuration, the provider ignores the `language_code` and `preference` values of that entry, so they cause no diff. Entries that do not set `custom_language` in the configuration plan and send `language_code` and `preference` as before. This also applies when an entry changes from `custom_language` to `language_code`, when entries are reordered, and when a custom language was set outside Terraform
+* gmail: `terraform import` of `googleworkspace_gmail_send_as_alias` now splits the ID at the first `:` only, so a send-as address that contains `:` (a quoted local part or an IPv6 address literal) can be imported. Before, such an ID failed with an unexpected format error. The ID format `primary-email:send-as-email` does not change, and existing IDs parse as before
 
 ## 0.8.0 (Unreleased)
 

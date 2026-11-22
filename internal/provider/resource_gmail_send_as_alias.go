@@ -15,8 +15,12 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
-// TODO ensure a safe character is chosen to separate emails for a composite id,
-// otherwise it will be difficult to support import
+// sendAsIdSeparator separates primary_email and send_as_email in the resource
+// ID. An email address can contain ":" (in a quoted local part or in an IPv6
+// address literal), so the import parser splits at the first ":" only and
+// keeps the rest as send_as_email. The parser assumes that primary_email, a
+// Google Workspace user address, has no ":". The separator stays ":" so that
+// existing IDs keep working.
 const sendAsIdSeparator = ":"
 
 // newGmailSendAsAliasService creates the Gmail service that impersonates the
@@ -285,7 +289,7 @@ func resourceGmailSendAsAliasDelete(ctx context.Context, d *schema.ResourceData,
 }
 
 func resourceGmailSendAsAliasImport(ctx context.Context, d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
-	idParts := strings.Split(d.Id(), sendAsIdSeparator)
+	idParts := strings.SplitN(d.Id(), sendAsIdSeparator, 2)
 	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
 		return nil, fmt.Errorf("Unexpected format of ID (%q), expected primary-email%ssend-as-email", d.Id(), sendAsIdSeparator)
 	}

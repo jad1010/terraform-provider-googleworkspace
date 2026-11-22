@@ -313,9 +313,9 @@ Optional:
 
 Optional:
 
-- `custom_language` (String) Other language. A user can provide their own language name if there is no corresponding Google III language code. If this is set, LanguageCode can't be set.
-- `language_code` (String) Defaults to `en`. Language Code. Should be used for storing Google III LanguageCode string representation for language. Illegal values cause SchemaException.
-- `preference` (String) Defaults to `preferred`. If present, controls whether the specified languageCode is the user's preferred language. Allowed values are `preferred` and `not_preferred`.
+- `custom_language` (String) Other language. A user can provide their own language name if there is no corresponding Google III language code. If this is set, the provider does not send `language_code` or `preference` to the API and ignores their values, because the API does not accept them together with a custom language.
+- `language_code` (String) Defaults to `en`. Language Code. Should be used for storing Google III LanguageCode string representation for language. Illegal values cause SchemaException. Ignored when `custom_language` is set.
+- `preference` (String) Defaults to `preferred`. If present, controls whether the specified languageCode is the user's preferred language. Allowed values are `preferred` and `not_preferred`. Ignored when `custom_language` is set.
 
 
 <a id="nestedblock--locations"></a>

@@ -73,3 +73,45 @@ func TestIsEmail(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateEmail(t *testing.T) {
+	valid := []string{
+		"user@example.com",
+		"first.last@example.com",
+		"user+tag@example.com",
+		"user@sub.example.co.uk",
+		"o'brien@example.com",
+		"user_name-1@example.com",
+		"USER@EXAMPLE.COM",
+		"user@localhost",
+		`"a@b"@example.com`,
+	}
+	for _, v := range valid {
+		if diags := validateEmail(v, nil); diags.HasError() {
+			t.Errorf("validateEmail(%q): expected no error, got %v", v, diags)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"user",
+		"example.com",
+		"@example.com",
+		"user@",
+		"@",
+		"user @example.com",
+		" user@example.com",
+		"user@example.com ",
+		"user@example.com\n",
+		"user@exa\tmple.com",
+	}
+	for _, v := range invalid {
+		if diags := validateEmail(v, nil); !diags.HasError() {
+			t.Errorf("validateEmail(%q): expected an error, got none", v)
+		}
+	}
+
+	if diags := validateEmail(42, nil); !diags.HasError() {
+		t.Errorf("validateEmail(42): expected an error for a non-string value, got none")
+	}
+}

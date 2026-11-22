@@ -117,7 +117,11 @@ func resourceSchema() *schema.Resource {
 							Default:          "ALL_DOMAIN_USERS",
 							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"ADMINS_AND_SELF", "ALL_DOMAIN_USERS"}, true)),
 						},
-						// TODO: (mbang) AtLeastOneOf (https://github.com/hashicorp/terraform-plugin-sdk/issues/470)
+						// AtLeastOneOf cannot require min_value or max_value here: the SDK
+						// accepts only absolute paths, through TypeList blocks with
+						// MaxItems: 1 only, and fields is a list without MaxItems: 1.
+						// The API documents both values as hints that it does not
+						// enforce and requires neither, so no other check is added.
 						"numeric_indexing_spec": {
 							Description: "Indexing spec for a numeric field. By default, " +
 								"only exact match queries will be supported for numeric fields. " +

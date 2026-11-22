@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
@@ -200,6 +201,29 @@ func sortListOfInterfaces(v []interface{}) []string {
 	}
 	sort.Strings(newVal)
 	return newVal
+}
+
+// validateEmail is a SchemaValidateDiagFunc that rejects a value that cannot be
+// an email address. The value must have text before and after its last "@" and
+// must not contain whitespace. The check is intentionally loose: it does not
+// apply RFC 5322 syntax, so it accepts plus addressing, subdomains and other
+// valid forms. The API does the full check.
+func validateEmail(v interface{}, _ cty.Path) diag.Diagnostics {
+	value, ok := v.(string)
+	if !ok {
+		return diag.Errorf("expected an email address of type string, got %T", v)
+	}
+
+	at := strings.LastIndex(value, "@")
+	if at <= 0 || at == len(value)-1 || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return diag.Diagnostics{{
+			Severity: diag.Error,
+			Summary:  "Invalid email address",
+			Detail:   fmt.Sprintf("%q is not a valid email address. Use the form user@example.com.", value),
+		}}
+	}
+
+	return nil
 }
 
 // isEmail returns a boolean indicating if the input string is parsable as an email

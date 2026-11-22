@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/go-cty/cty"
@@ -47,6 +48,85 @@ func diffSuppressEmails(k, old, new string, d *schema.ResourceData) bool {
 	}
 
 	return reflect.DeepEqual(subsetEmails, configEmails.([]interface{}))
+}
+
+// expandUserLanguages expands the languages blocks for the API. The API
+// reference for UserLanguage says about customLanguage: "If this is set,
+// `languageCode` can't be set", and about preference: "If `customLanguage` is
+// set, this can't be set". language_code and preference have schema defaults,
+// so they are always present. For an entry that sets custom_language, this
+// function removes languageCode and preference.
+func expandUserLanguages(v interface{}) []interface{} {
+	languages := expandInterfaceObjects(v)
+	for _, l := range languages {
+		language := l.(map[string]interface{})
+		if _, ok := language["customLanguage"]; ok {
+			delete(language, "languageCode")
+			delete(language, "preference")
+		}
+	}
+	return languages
+}
+
+// diffSuppressLanguageWithCustomLanguage suppresses a diff on language_code or
+// preference in a languages entry that sets custom_language. The provider does
+// not send these values for such an entry (see expandUserLanguages), so the API
+// does not return them, and a diff against the schema default would never go
+// away.
+//
+// The function reads custom_language from the raw configuration of the same
+// entry, not with d.Get: d.Get returns the value from the state when the
+// configuration does not set it, so a change from a custom language to a
+// language code would lose the language code. An unknown value does not
+// suppress the diff.
+func diffSuppressLanguageWithCustomLanguage(k, _, _ string, d *schema.ResourceData) bool {
+	parts := strings.Split(k, ".")
+	if len(parts) != 3 || parts[0] != "languages" {
+		return false
+	}
+	index, err := strconv.Atoi(parts[1])
+	if err != nil || index < 0 {
+		return false
+	}
+
+	rawConfig := d.GetRawConfig()
+	if rawConfig.IsNull() {
+		// Terraform's plan and apply paths always provide the raw config. It
+		// is null only in legacy unit tests that build a diff without one.
+		// d.Get merges config over state, so this fallback can return the
+		// state value; do not rely on it outside those tests.
+		customLanguage, _ := d.Get("languages." + parts[1] + ".custom_language").(string)
+		return customLanguage != ""
+	}
+
+	return rawLanguageHasCustomLanguage(rawConfig, index)
+}
+
+// rawLanguageHasCustomLanguage returns true if the languages entry at index in
+// the raw configuration sets a known, non-empty custom_language.
+func rawLanguageHasCustomLanguage(rawConfig cty.Value, index int) bool {
+	if !rawConfig.IsKnown() || !rawConfig.Type().IsObjectType() || !rawConfig.Type().HasAttribute("languages") {
+		return false
+	}
+
+	languages := rawConfig.GetAttr("languages")
+	if languages.IsNull() || !languages.IsKnown() || !languages.CanIterateElements() ||
+		index >= languages.LengthInt() {
+		return false
+	}
+
+	language := languages.Index(cty.NumberIntVal(int64(index)))
+	if language.IsNull() || !language.IsKnown() || !language.Type().IsObjectType() ||
+		!language.Type().HasAttribute("custom_language") {
+		return false
+	}
+
+	customLanguage := language.GetAttr("custom_language")
+	if customLanguage.IsNull() || !customLanguage.IsKnown() || !customLanguage.Type().Equals(cty.String) {
+		return false
+	}
+
+	return customLanguage.AsString() != ""
 }
 
 func diffSuppressAliases(k, old, new string, d *schema.ResourceData) bool {
@@ -174,6 +254,12 @@ func resourceUser() *schema.Resource {
 			StateContext: schema.ImportStatePassthroughContext,
 		},
 
+		// The Directory API documents a maximum data size in bytes for several
+		// list fields (for example, 10KB for emails), but no maximum number of
+		// entries. MaxItems limits the number of entries, so it cannot express
+		// this limit. SDK v2.41.1 also does not accept ValidateFunc or
+		// ValidateDiagFunc on TypeList or TypeSet. The API does not say how it
+		// measures the data size, so the provider leaves this check to the API.
 		Schema: map[string]*schema.Schema{
 			"id": {
 				Description: "The unique ID for the user.",
@@ -183,9 +269,9 @@ func resourceUser() *schema.Resource {
 			"primary_email": {
 				Description: "The user's primary email address. The primaryEmail must be unique and cannot be an alias " +
 					"of another user.",
-				Type:     schema.TypeString,
-				Required: true,
-				// TODO write a custom validation function to validate email
+				Type:             schema.TypeString,
+				Required:         true,
+				ValidateDiagFunc: validateEmail,
 			},
 			"password": {
 				Description: "Stores the password for the user account. A password can contain any combination of " +
@@ -270,8 +356,6 @@ func resourceUser() *schema.Resource {
 				Type:        schema.TypeBool,
 				Optional:    true,
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"name": {
 				Description: "Holds the given and family names of the user, and the read-only fullName value. " +
 					"The maximum number of characters in the givenName and in the familyName values is 60. " +
@@ -308,8 +392,6 @@ func resourceUser() *schema.Resource {
 				Type:        schema.TypeString,
 				Computed:    true,
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"emails": {
 				Description:      "A list of the user's email addresses. The maximum allowed data size is 10Kb.",
 				Type:             schema.TypeList,
@@ -349,8 +431,6 @@ func resourceUser() *schema.Resource {
 					},
 				},
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"external_ids": {
 				Description: "A list of external IDs for the user, such as an employee or network ID. " +
 					"The maximum allowed data size is 2Kb.",
@@ -382,8 +462,6 @@ func resourceUser() *schema.Resource {
 					},
 				},
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"relations": {
 				Description: "A list of the user's relationships to other users. " +
 					"The maximum allowed data size for this field is 2Kb.",
@@ -409,7 +487,7 @@ func resourceUser() *schema.Resource {
 								validation.StringInSlice([]string{"admin_assistant", "assistant", "brother", "child",
 									"custom", "domestic_partner", "dotted_line_manager", "exec_assistant", "father",
 									"friend", "manager", "mother", "parent", "partner", "referred_by", "relative",
-									"sister"}, false),
+									"sister", "spouse"}, false),
 							),
 						},
 						"value": {
@@ -443,9 +521,11 @@ func resourceUser() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-			// TODO: (mbang) AtLeastOneOf (https://github.com/hashicorp/terraform-plugin-sdk/issues/470)
-			// And add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
+			// AtLeastOneOf cannot refer to a sibling attribute in the same element
+			// of a list of blocks: the SDK accepts only absolute paths, through
+			// TypeList blocks with MaxItems: 1 only. The API documents no required
+			// address field other than type, which is Required, so a block is
+			// never empty and no other check is added.
 			"addresses": {
 				Description: "A list of the user's addresses. The maximum allowed data size is 10Kb.",
 				Type:        schema.TypeList,
@@ -528,8 +608,6 @@ func resourceUser() *schema.Resource {
 					},
 				},
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"organizations": {
 				Description: "A list of organizations the user belongs to. The maximum allowed data size is 10Kb.",
 				Type:        schema.TypeList,
@@ -613,8 +691,6 @@ func resourceUser() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"phones": {
 				Description: "A list of the user's phone numbers. The maximum allowed data size is 1Kb.",
 				Type:        schema.TypeList,
@@ -667,8 +743,13 @@ func resourceUser() *schema.Resource {
 				Type:        schema.TypeString,
 				Computed:    true,
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
+			// The API does not accept language_code or preference together with
+			// custom_language. ExactlyOneOf and ConflictsWith cannot express this
+			// rule: they cannot refer to a sibling attribute in the same element of
+			// a list of blocks (see addresses). language_code and preference also
+			// have defaults. So for an entry that sets custom_language,
+			// expandUserLanguages does not send them, and
+			// diffSuppressLanguageWithCustomLanguage ignores their values.
 			"languages": {
 				Description: "A list of the user's languages. The maximum allowed data size is 1Kb.",
 				Type:        schema.TypeList,
@@ -678,35 +759,36 @@ func resourceUser() *schema.Resource {
 					Schema: map[string]*schema.Schema{
 						"custom_language": {
 							Description: "Other language. A user can provide their own language name if there is no " +
-								"corresponding Google III language code. If this is set, LanguageCode can't be set.",
+								"corresponding Google III language code. If this is set, the provider does not send " +
+								"`language_code` or `preference` to the API and ignores their values, because the API " +
+								"does not accept them together with a custom language.",
 							Type:     schema.TypeString,
 							Optional: true,
-							// TODO: (mbang) https://github.com/hashicorp/terraform-plugin-sdk/issues/470
-							//ExactlyOneOf: []string{"custom_language", "language_code"},
-							//ConflictsWith: []string{"custom_language", "preference"},
 						},
 						"language_code": {
 							Description: "Language Code. Should be used for storing Google III LanguageCode string " +
-								"representation for language. Illegal values cause SchemaException.",
-							Type:     schema.TypeString,
-							Optional: true,
-							Default:  "en",
-							// TODO: (mbang) https://github.com/hashicorp/terraform-plugin-sdk/issues/470
-							//ExactlyOneOf: []string{"custom_language", "language_code"},
+								"representation for language. Illegal values cause SchemaException. " +
+								"Ignored when `custom_language` is set.",
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "en",
+							DiffSuppressFunc: diffSuppressLanguageWithCustomLanguage,
 						},
 						"preference": {
 							Description: "If present, controls whether the specified languageCode is the user's " +
-								"preferred language. Allowed values are `preferred` and `not_preferred`.",
-							Type:     schema.TypeString,
-							Optional: true,
-							Default:  "preferred",
-							// TODO: (mbang) https://github.com/hashicorp/terraform-plugin-sdk/issues/470
-							//ConflictsWith: []string{"custom_language", "preference"},
+								"preferred language. Allowed values are `preferred` and `not_preferred`. " +
+								"Ignored when `custom_language` is set.",
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "preferred",
+							DiffSuppressFunc: diffSuppressLanguageWithCustomLanguage,
 						},
 					},
 				},
 			},
-			// TODO: (mbang) AtLeastOneOf (https://github.com/hashicorp/terraform-plugin-sdk/issues/470)
+			// AtLeastOneOf cannot refer to a sibling attribute in the same element
+			// of a list of blocks (see addresses). The API documents no required
+			// POSIX account field, so no other check is added.
 			"posix_accounts": {
 				Description: "A list of POSIX account information for the user.",
 				Type:        schema.TypeList,
@@ -786,8 +868,6 @@ func resourceUser() *schema.Resource {
 					Type: schema.TypeString,
 				},
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"ssh_public_keys": {
 				Description: "A list of SSH public keys. The maximum allowed data size is 10Kb.",
 				Type:        schema.TypeList,
@@ -812,8 +892,6 @@ func resourceUser() *schema.Resource {
 					},
 				},
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"websites": {
 				Description: "A list of the user's websites. The maximum allowed data size is 2Kb.",
 				Type:        schema.TypeList,
@@ -852,8 +930,6 @@ func resourceUser() *schema.Resource {
 					},
 				},
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"locations": {
 				Description: "A list of the user's locations. The maximum allowed data size is 10Kb.",
 				Type:        schema.TypeList,
@@ -913,8 +989,6 @@ func resourceUser() *schema.Resource {
 				Optional: true,
 				Default:  true,
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"keywords": {
 				Description: "A list of the user's keywords. The maximum allowed data size is 1Kb.",
 				Type:        schema.TypeList,
@@ -966,7 +1040,6 @@ func resourceUser() *schema.Resource {
 							Description: "The email of the recipient of the transferred data.",
 							Type:        schema.TypeString,
 							Required:    true,
-							// TODO write a custom validation function to validate email
 						},
 						"calendar_transfer": {
 							Description: "Indicates if the user's calendar data is transferred.",
@@ -1024,8 +1097,6 @@ func resourceUser() *schema.Resource {
 				Type:        schema.TypeString,
 				Computed:    true,
 			},
-			// TODO: (mbang) Add ValidateDiagFunc for max size when it's allowed on lists
-			// (https://github.com/hashicorp/terraform-plugin-sdk/issues/156)
 			"ims": {
 				Description: "The user's Instant Messenger (IM) accounts. A user account can have multiple ims " +
 					"properties. But, only one of these ims properties can be the primary IM contact. " +
@@ -1197,7 +1268,7 @@ func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta interf
 		Addresses:                  expandInterfaceObjects(d.Get("addresses")),
 		Organizations:              expandInterfaceObjects(d.Get("organizations")),
 		Phones:                     expandInterfaceObjects(d.Get("phones")),
-		Languages:                  expandInterfaceObjects(d.Get("languages")),
+		Languages:                  expandUserLanguages(d.Get("languages")),
 		PosixAccounts:              expandInterfaceObjects(d.Get("posix_accounts")),
 		SshPublicKeys:              expandInterfaceObjects(d.Get("ssh_public_keys")),
 		Websites:                   expandInterfaceObjects(d.Get("websites")),
@@ -1634,7 +1705,7 @@ func resourceUserUpdateUser(ctx context.Context, d *schema.ResourceData, meta in
 	}
 
 	if d.HasChange("languages") {
-		languages := expandInterfaceObjects(d.Get("languages"))
+		languages := expandUserLanguages(d.Get("languages"))
 		userObj.Languages = languages
 	}
 

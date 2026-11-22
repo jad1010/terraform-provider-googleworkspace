@@ -2,6 +2,7 @@ package googleworkspace
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -561,4 +562,385 @@ func TestResourceUserUpdatePasswordWiring(t *testing.T) {
 			}
 		})
 	}
+}
+
+// userRelationTypes is the list of acceptable relations[].type values in the
+// Directory API reference for the User resource.
+var userRelationTypes = []string{
+	"admin_assistant", "assistant", "brother", "child", "custom", "domestic_partner",
+	"dotted_line_manager", "exec_assistant", "father", "friend", "manager", "mother",
+	"parent", "partner", "referred_by", "relative", "sister", "spouse",
+}
+
+func TestResourceUserRelationTypes(t *testing.T) {
+	t.Parallel()
+
+	typeSchema := resourceUser().Schema["relations"].Elem.(*schema.Resource).Schema["type"]
+	path := cty.GetAttrPath("relations").IndexInt(0).GetAttr("type")
+
+	for _, relationType := range userRelationTypes {
+		t.Run(relationType, func(t *testing.T) {
+			if diags := typeSchema.ValidateDiagFunc(relationType, path); diags.HasError() {
+				t.Errorf("expected %q to be valid, got %v", relationType, diags)
+			}
+		})
+	}
+
+	t.Run("invalid value", func(t *testing.T) {
+		if diags := typeSchema.ValidateDiagFunc("cousin", path); !diags.HasError() {
+			t.Errorf("expected %q to be invalid", "cousin")
+		}
+	})
+
+	t.Run("description lists the same values", func(t *testing.T) {
+		_, list, ok := strings.Cut(typeSchema.Description, "Acceptable values: ")
+		if !ok {
+			t.Fatalf("description has no list of acceptable values: %q", typeSchema.Description)
+		}
+		var got []string
+		for _, v := range strings.Split(strings.TrimSuffix(list, "."), ",") {
+			got = append(got, strings.Trim(strings.TrimSpace(v), "`"))
+		}
+		if strings.Join(got, ",") != strings.Join(userRelationTypes, ",") {
+			t.Errorf("description values differ from the API reference:\ngot:  %v\nwant: %v", got, userRelationTypes)
+		}
+	})
+}
+
+func TestExpandUserLanguages(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		in   []interface{}
+		want []interface{}
+	}{
+		"language code with defaults": {
+			in: []interface{}{
+				map[string]interface{}{"custom_language": "", "language_code": "en", "preference": "preferred"},
+			},
+			want: []interface{}{
+				map[string]interface{}{"languageCode": "en", "preference": "preferred"},
+			},
+		},
+		"language code not preferred": {
+			in: []interface{}{
+				map[string]interface{}{"custom_language": "", "language_code": "fr", "preference": "not_preferred"},
+			},
+			want: []interface{}{
+				map[string]interface{}{"languageCode": "fr", "preference": "not_preferred"},
+			},
+		},
+		"custom language drops schema defaults": {
+			in: []interface{}{
+				map[string]interface{}{"custom_language": "Klingon", "language_code": "en", "preference": "preferred"},
+			},
+			want: []interface{}{
+				map[string]interface{}{"customLanguage": "Klingon"},
+			},
+		},
+		"custom language drops explicit values": {
+			in: []interface{}{
+				map[string]interface{}{"custom_language": "Klingon", "language_code": "fr", "preference": "not_preferred"},
+			},
+			want: []interface{}{
+				map[string]interface{}{"customLanguage": "Klingon"},
+			},
+		},
+		"mixed entries": {
+			in: []interface{}{
+				map[string]interface{}{"custom_language": "", "language_code": "de", "preference": "preferred"},
+				map[string]interface{}{"custom_language": "Klingon", "language_code": "en", "preference": "preferred"},
+			},
+			want: []interface{}{
+				map[string]interface{}{"languageCode": "de", "preference": "preferred"},
+				map[string]interface{}{"customLanguage": "Klingon"},
+			},
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := expandUserLanguages(test.in)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("got %#v, want %#v", got, test.want)
+			}
+		})
+	}
+
+	if got := expandUserLanguages([]interface{}{}); got != nil {
+		t.Errorf("empty list: got %#v, want nil", got)
+	}
+}
+
+func TestFlattenUserLanguages(t *testing.T) {
+	t.Parallel()
+
+	got := flattenInterfaceObjects([]interface{}{
+		map[string]interface{}{"languageCode": "en", "preference": "preferred"},
+		map[string]interface{}{"customLanguage": "Klingon"},
+	})
+	want := []map[string]interface{}{
+		{"language_code": "en", "preference": "preferred"},
+		{"custom_language": "Klingon"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+// userRawLanguages returns a raw configuration value for the languages
+// blocks. Attributes that an entry does not set are null.
+func userRawLanguages(entries ...map[string]cty.Value) cty.Value {
+	listTy := resourceUser().CoreConfigSchema().ImpliedType().AttributeType("languages")
+	objTy := listTy.ElementType()
+
+	elems := make([]cty.Value, 0, len(entries))
+	for _, entry := range entries {
+		vals := make(map[string]cty.Value, len(objTy.AttributeTypes()))
+		for name, attrTy := range objTy.AttributeTypes() {
+			vals[name] = cty.NullVal(attrTy)
+		}
+		for name, v := range entry {
+			vals[name] = v
+		}
+		elems = append(elems, cty.ObjectVal(vals))
+	}
+
+	return cty.ListVal(elems)
+}
+
+type attrChange struct {
+	Old, New string
+}
+
+// TestResourceUserLanguagesDiff builds the state from an API response with the
+// same flatten function as the read. It then plans like PlanResourceChange: the
+// legacy configuration is the shimmed configuration, and the prior state
+// carries the raw configuration. It checks the exact diff on languages and the
+// API payload that expandUserLanguages builds from the planned values.
+func TestResourceUserLanguagesDiff(t *testing.T) {
+	t.Parallel()
+
+	klingon := map[string]interface{}{"customLanguage": "Klingon"}
+	fr := map[string]interface{}{"languageCode": "fr", "preference": "preferred"}
+
+	tests := map[string]struct {
+		apiLanguages []interface{}
+		config       cty.Value
+		wantDiff     map[string]attrChange
+		wantPayload  []interface{}
+	}{
+		"language code with defaults has no diff": {
+			apiLanguages: []interface{}{map[string]interface{}{"languageCode": "en", "preference": "preferred"}},
+			config:       userRawLanguages(map[string]cty.Value{}),
+			wantDiff:     map[string]attrChange{},
+			wantPayload:  []interface{}{map[string]interface{}{"languageCode": "en", "preference": "preferred"}},
+		},
+		"explicit language code has no diff": {
+			apiLanguages: []interface{}{map[string]interface{}{"languageCode": "fr", "preference": "not_preferred"}},
+			config: userRawLanguages(map[string]cty.Value{
+				"language_code": cty.StringVal("fr"), "preference": cty.StringVal("not_preferred"),
+			}),
+			wantDiff:    map[string]attrChange{},
+			wantPayload: []interface{}{map[string]interface{}{"languageCode": "fr", "preference": "not_preferred"}},
+		},
+		"changed language code": {
+			apiLanguages: []interface{}{fr},
+			config:       userRawLanguages(map[string]cty.Value{"language_code": cty.StringVal("de")}),
+			wantDiff: map[string]attrChange{
+				"languages.0.language_code": {"fr", "de"},
+			},
+			wantPayload: []interface{}{map[string]interface{}{"languageCode": "de", "preference": "preferred"}},
+		},
+		"custom language with defaults has no diff": {
+			apiLanguages: []interface{}{klingon},
+			config:       userRawLanguages(map[string]cty.Value{"custom_language": cty.StringVal("Klingon")}),
+			wantDiff:     map[string]attrChange{},
+			wantPayload:  []interface{}{map[string]interface{}{"customLanguage": "Klingon"}},
+		},
+		"custom language with explicit values has no diff": {
+			apiLanguages: []interface{}{klingon},
+			config: userRawLanguages(map[string]cty.Value{
+				"custom_language": cty.StringVal("Klingon"),
+				"language_code":   cty.StringVal("fr"),
+				"preference":      cty.StringVal("not_preferred"),
+			}),
+			wantDiff:    map[string]attrChange{},
+			wantPayload: []interface{}{map[string]interface{}{"customLanguage": "Klingon"}},
+		},
+		"changed custom language": {
+			apiLanguages: []interface{}{klingon},
+			config:       userRawLanguages(map[string]cty.Value{"custom_language": cty.StringVal("Elvish")}),
+			wantDiff: map[string]attrChange{
+				"languages.0.custom_language": {"Klingon", "Elvish"},
+			},
+			wantPayload: []interface{}{map[string]interface{}{"customLanguage": "Elvish"}},
+		},
+		"custom language to language code": {
+			apiLanguages: []interface{}{klingon},
+			config:       userRawLanguages(map[string]cty.Value{"language_code": cty.StringVal("fr")}),
+			wantDiff: map[string]attrChange{
+				"languages.0.custom_language": {"Klingon", ""},
+				"languages.0.language_code":   {"", "fr"},
+				"languages.0.preference":      {"", "preferred"},
+			},
+			wantPayload: []interface{}{map[string]interface{}{"languageCode": "fr", "preference": "preferred"}},
+		},
+		"custom language set outside Terraform": {
+			apiLanguages: []interface{}{klingon},
+			config: userRawLanguages(map[string]cty.Value{
+				"language_code": cty.StringVal("fr"), "preference": cty.StringVal("not_preferred"),
+			}),
+			wantDiff: map[string]attrChange{
+				"languages.0.custom_language": {"Klingon", ""},
+				"languages.0.language_code":   {"", "fr"},
+				"languages.0.preference":      {"", "not_preferred"},
+			},
+			wantPayload: []interface{}{map[string]interface{}{"languageCode": "fr", "preference": "not_preferred"}},
+		},
+		"language code to custom language": {
+			apiLanguages: []interface{}{fr},
+			config:       userRawLanguages(map[string]cty.Value{"custom_language": cty.StringVal("Klingon")}),
+			wantDiff: map[string]attrChange{
+				"languages.0.custom_language": {"", "Klingon"},
+			},
+			wantPayload: []interface{}{map[string]interface{}{"customLanguage": "Klingon"}},
+		},
+		"reordered entries": {
+			apiLanguages: []interface{}{klingon, fr},
+			config: userRawLanguages(
+				map[string]cty.Value{"language_code": cty.StringVal("fr")},
+				map[string]cty.Value{"custom_language": cty.StringVal("Klingon")},
+			),
+			wantDiff: map[string]attrChange{
+				"languages.0.custom_language": {"Klingon", ""},
+				"languages.0.language_code":   {"", "fr"},
+				"languages.0.preference":      {"", "preferred"},
+				"languages.1.custom_language": {"", "Klingon"},
+			},
+			wantPayload: []interface{}{
+				map[string]interface{}{"languageCode": "fr", "preference": "preferred"},
+				map[string]interface{}{"customLanguage": "Klingon"},
+			},
+		},
+		"language code prepended before a custom language": {
+			apiLanguages: []interface{}{klingon},
+			config: userRawLanguages(
+				map[string]cty.Value{"language_code": cty.StringVal("fr")},
+				map[string]cty.Value{"custom_language": cty.StringVal("Klingon")},
+			),
+			wantDiff: map[string]attrChange{
+				"languages.#":                 {"1", "2"},
+				"languages.0.custom_language": {"Klingon", ""},
+				"languages.0.language_code":   {"", "fr"},
+				"languages.0.preference":      {"", "preferred"},
+				"languages.1.custom_language": {"", "Klingon"},
+			},
+			wantPayload: []interface{}{
+				map[string]interface{}{"languageCode": "fr", "preference": "preferred"},
+				map[string]interface{}{"customLanguage": "Klingon"},
+			},
+		},
+		"unknown custom language does not suppress": {
+			apiLanguages: []interface{}{fr},
+			config:       userRawLanguages(map[string]cty.Value{"custom_language": cty.UnknownVal(cty.String)}),
+			wantDiff: map[string]attrChange{
+				"languages.0.custom_language": {"", "<computed>"},
+				"languages.0.language_code":   {"fr", "en"},
+			},
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := resourceUser()
+
+			d := r.TestResourceData()
+			d.SetId("123456789012345678901")
+			if err := d.Set("primary_email", "user@example.com"); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.Set("languages", flattenInterfaceObjects(test.apiLanguages)); err != nil {
+				t.Fatal(err)
+			}
+			state := d.State()
+
+			rawConfig := userRawConfig(map[string]cty.Value{
+				"primary_email": cty.StringVal("user@example.com"),
+				"languages":     test.config,
+			})
+			state.RawConfig = rawConfig
+			config := terraform.NewResourceConfigShimmed(rawConfig, r.CoreConfigSchema())
+
+			diff, err := r.SimpleDiff(context.Background(), state, config, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			gotDiff := map[string]attrChange{}
+			if diff != nil {
+				for k, attr := range diff.Attributes {
+					if !strings.HasPrefix(k, "languages.") {
+						continue
+					}
+					change := attrChange{attr.Old, attr.New}
+					if attr.NewComputed {
+						change.New = "<computed>"
+					}
+					if change.Old != change.New {
+						gotDiff[k] = change
+					}
+				}
+			}
+			if !reflect.DeepEqual(gotDiff, test.wantDiff) {
+				t.Errorf("diff on languages:\ngot:  %v\nwant: %v", gotDiff, test.wantDiff)
+			}
+
+			if test.wantPayload == nil {
+				return
+			}
+			planned, err := schema.InternalMap(r.Schema).Data(state, diff)
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+			gotPayload := expandUserLanguages(planned.Get("languages"))
+			if !reflect.DeepEqual(gotPayload, test.wantPayload) {
+				t.Errorf("payload:\ngot:  %#v\nwant: %#v", gotPayload, test.wantPayload)
+			}
+		})
+	}
+}
+
+func TestResourceUserEmailValidation(t *testing.T) {
+	t.Parallel()
+
+	r := resourceUser()
+
+	t.Run("primary_email uses validateEmail", func(t *testing.T) {
+		validate := r.Schema["primary_email"].ValidateDiagFunc
+		if validate == nil {
+			t.Fatal("primary_email has no ValidateDiagFunc")
+		}
+		path := cty.GetAttrPath("primary_email")
+		if diags := validate("user+tag@sub.example.com", path); diags.HasError() {
+			t.Errorf("expected a valid address to pass, got %v", diags)
+		}
+		if diags := validate("not-an-email", path); !diags.HasError() {
+			t.Errorf("expected %q to fail", "not-an-email")
+		}
+	})
+
+	// users.get accepts a primary email address, an alias email address, or
+	// a unique user ID, so new_data_owner_email must accept a user ID.
+	t.Run("new_data_owner_email accepts a unique user ID", func(t *testing.T) {
+		transfer := r.Schema["on_delete_data_transfer"].Elem.(*schema.Resource)
+		validate := transfer.Schema["new_data_owner_email"].ValidateDiagFunc
+		if validate == nil {
+			return
+		}
+		path := cty.GetAttrPath("on_delete_data_transfer").IndexInt(0).GetAttr("new_data_owner_email")
+		if diags := validate("123456789012345678901", path); diags.HasError() {
+			t.Errorf("expected a unique user ID to pass, got %v", diags)
+		}
+	})
 }
