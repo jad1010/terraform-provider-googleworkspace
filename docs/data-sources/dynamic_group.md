@@ -22,6 +22,7 @@ Dynamic group data source in the Terraform Googleworkspace provider. Dynamic Gro
 
 ### Read-Only
 
+- `aliases` (List of String) List of the group's alias email addresses.
 - `description` (String) An extended description to help users determine the purpose of a group.For example, you can include information about who should join the group,the types of messages to send to the group, links to FAQs about the group, or related groups.
 - `labels` (Map of String) One or more label entries that apply to the Group. Currently supported labels contain a key with an empty value.
 - `name` (String) The group's display name.

@@ -88,11 +88,202 @@ BUG FIXES:
 * chromepolicy: `googleworkspace_chrome_policy` now accepts the strings `"true"` and `"false"` for `TYPE_BOOL` fields, and treats them as `true` and `false`. Other strings, such as `"1"` or `"t"`, are not valid boolean values
 * chromepolicy: `googleworkspace_chrome_policy` now checks a value against the field in the message of the policy (the message named by the last part of the schema name, for example `Foo` for `chrome.users.Foo`) first. Only if that message has no field with the name, it uses the first top-level field with the name. Before, a field with the same name in another message that came first in the schema was used
 
-## 0.8.0 (Unreleased)
+## 0.12.0 (August 29, 2026)
+
+FEATURES:
+
+* directory: added `aliases` to `googleworkspace_dynamic_group` and `data.googleworkspace_dynamic_group` ([#36](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/36))
+
+IMPROVEMENTS:
+
+* directory: improved handling of primary email changes combined with suspension or alias changes for `googleworkspace_user`, `googleworkspace_group` and `googleworkspace_group_settings` ([#35](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/35))
+* directory: removed the default Google query suffix from all `googleworkspace_dynamic_group` queries ([#32](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/32))
+* docs: documented `googleworkspace_user_delegate` and added an example ([#26](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/26))
+* deps: updated `google.golang.org/grpc`, `golang.org/x/net` and `golang.org/x/crypto` ([#31](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/31), [#28](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/28), [#29](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/29))
 
 BUG FIXES:
 
 * directory: `googleworkspace_group_settings` is now removed from state on a 404 read (e.g. when its group is deleted outside Terraform) instead of failing the plan ([#30](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/30))
+* directory: 404 responses during read are now handled by removing the resource from state ([#33](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/33))
+* tests: fixed test compilation errors reported by `go vet` ([#26](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/26))
+
+NOTES:
+
+* The minimum Go version is now 1.25.0
+
+## 0.11.5 (June 5, 2026)
+
+IMPROVEMENTS:
+
+* provider: improved retry handling ([#25](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/25))
+* deps: updated `go.opentelemetry.io/otel` ([#24](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/24))
+
+## 0.11.4 (April 15, 2026)
+
+BUG FIXES:
+
+* provider: HTTP 412 responses are now retried ([#23](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/23))
+
+## 0.11.3 (April 10, 2026)
+
+BUG FIXES:
+
+* directory: user suspension is now handled separately from other `googleworkspace_user` updates ([#22](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/22))
+
+## 0.11.2 (March 17, 2026)
+
+BUG FIXES:
+
+* directory: `googleworkspace_group_member` now fetches the member by email when the API returns an empty member ID on create
+
+NOTES:
+
+* deps: updated `github.com/cloudflare/circl` ([#20](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/20))
+
+## 0.11.1 (November 24, 2025)
+
+NOTES:
+
+* The minimum Go version is now 1.24.0
+* deps: updated `github.com/cloudflare/circl`, `golang.org/x/net`, `golang.org/x/oauth2` and `golang.org/x/crypto` ([#16](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/16), [#17](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/17), [#18](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/18), [#19](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/19))
+
+## 0.11.0 (January 6, 2025)
+
+FEATURES:
+
+* **New Resource:** `googleworkspace_user_delegate` ([#12](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/12))
+
+BUG FIXES:
+
+* directory: the diff for `googleworkspace_group` aliases is now suppressed when only the order changes ([#11](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/11))
+
+## 0.10.3 (December 6, 2024)
+
+BUG FIXES:
+
+* directory: suppress diffs on `googleworkspace_dynamic_group` labels
+
+## 0.10.2 (December 6, 2024)
+
+BUG FIXES:
+
+* directory: improved handling of the default required label for `googleworkspace_dynamic_group`
+
+NOTES:
+
+* docs: regenerated
+
+## 0.10.1 (October 14, 2024)
+
+IMPROVEMENTS:
+
+* directory: added `assignee_type` to `googleworkspace_role_assignment` so a role can be assigned to a group
+* directory: added an option to add labels to `googleworkspace_dynamic_group`, for example to create security groups
+
+## 0.10.0 (October 14, 2024)
+
+FEATURES:
+
+* **New Resource:** `googleworkspace_dynamic_group` ([#8](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/8))
+* **New Datasource:** `googleworkspace_dynamic_group` ([#8](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/8))
+
+## 0.9.5 (September 18, 2024)
+
+BUG FIXES:
+
+* directory: fixed alias suppression logic
+
+NOTES:
+
+* build: updated the GoReleaser configuration
+
+## 0.9.4 (May 14, 2024)
+
+BUG FIXES:
+
+* directory: fixed the Drive and Docs data transfer on `googleworkspace_user` deletion, which never matched in 0.9.0 to 0.9.3
+
+## 0.9.3 (May 11, 2024)
+
+BUG FIXES:
+
+* directory: fixed alias suppression
+
+## 0.9.2 (May 11, 2024)
+
+IMPROVEMENTS:
+
+* directory: aliases are now sorted and diffs are suppressed on order changes ([#7](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/7))
+* directory: added `ALL_OWNERS_CAN_LEAVE` to `googleworkspace_group_settings` ([#6](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/6))
+
+## 0.9.1 (May 11, 2024)
+
+IMPROVEMENTS:
+
+* provider: removed the manual sleep, which is only needed under extreme concurrency
+
+## 0.9.0 (May 11, 2024)
+
+FEATURES:
+
+* directory: added data transfer on deletion for `googleworkspace_user` ([#2](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/2))
+
+IMPROVEMENTS:
+
+* provider: improved retry handling ([#3](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/3))
+* docs: made the advantages of domain wide delegation more explicit
+* deps: updated Go dependencies
+
+BUG FIXES:
+
+* directory: added a default language to `googleworkspace_group` to stop permanent diffs ([#5](https://github.com/SamuZad/terraform-provider-googleworkspace/pull/5))
+
+NOTES:
+
+* The minimum Go version is now 1.21 (toolchain 1.22.0)
+
+## 0.8.2 (November 15, 2023)
+
+IMPROVEMENTS:
+
+* provider: lowered the consistency requirement used while waiting for changes to propagate
+
+## 0.8.1 (August 24, 2023)
+
+NOTES:
+
+* deps: updated Go packages
+
+## 0.8.0 (August 24, 2023)
+
+NOTES:
+
+* The minimum Go version is now 1.20
+* deps: updated `google.golang.org/api` to v0.138.0
+* build: adjusted the release build configuration
+
+## 0.7.3 (August 24, 2023)
+
+BUG FIXES:
+
+* directory: a primary email change is now applied first so it does not conflict with other API operations, such as suspension or archival, in the same apply
+
+## 0.7.2 (August 24, 2023)
+
+BUG FIXES:
+
+* directory: fixed an issue with user creation
+
+## 0.7.1 (August 24, 2023)
+
+NOTES:
+
+* Added copyright and license headers, updated the MPL 2.0 license and README, and added CODEOWNERS ([#420](https://github.com/hashicorp/terraform-provider-googleworkspace/pull/420), [#407](https://github.com/hashicorp/terraform-provider-googleworkspace/pull/407), [#377](https://github.com/hashicorp/terraform-provider-googleworkspace/pull/377))
+* build: changed the release workflow
+
+BUG FIXES:
+
+* directory: changing `primary_email` on `googleworkspace_user` now deletes the alias that Google keeps for the old primary email
 
 ## 0.7.0 (June 10, 2022)
 
