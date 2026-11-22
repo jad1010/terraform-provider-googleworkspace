@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -154,6 +155,15 @@ func resourceUser() *schema.Resource {
 		UpdateContext: resourceUserUpdate,
 		DeleteContext: resourceUserDelete,
 
+		CustomizeDiff: resourceUserCustomizeDiff,
+
+		// Warn on Terraform 1.11 and later when the configuration sets password.
+		// The validator returns no diagnostics if the client does not support
+		// write-only arguments.
+		ValidateRawResourceConfigFuncs: []schema.ValidateRawResourceConfigFunc{
+			validation.PreferWriteOnlyAttribute(cty.GetAttrPath("password"), cty.GetAttrPath("password_wo")),
+		},
+
 		Timeouts: &schema.ResourceTimeout{
 			Create: schema.DefaultTimeout(5 * time.Minute),
 			Update: schema.DefaultTimeout(5 * time.Minute),
@@ -180,18 +190,50 @@ func resourceUser() *schema.Resource {
 			"password": {
 				Description: "Stores the password for the user account. A password can contain any combination of " +
 					"ASCII characters. A minimum of 8 characters is required. The maximum length is 100 characters. " +
-					"As the API does not return the value of password, this field is write-only, and the value stored " +
-					"in the state will be what is provided in the configuration. The field is required on create and will " +
-					"be empty on import.",
+					"The API does not return the value of password. Terraform stores the value from the configuration " +
+					"in the state in plain text. To keep the password out of the state, use `password_wo` instead. " +
+					"With Terraform 1.11 or later, the provider shows a warning when `password` is set. The warning " +
+					"also shows when `password` gets its value from a variable, even if that value can be null. " +
+					"One of `password` or `password_wo` is required on create. The field will be empty on import.",
 				Type:             schema.TypeString,
 				Optional:         true,
 				Sensitive:        true,
+				ConflictsWith:    []string{"password_wo"},
 				ValidateDiagFunc: validation.ToDiagFunc(validation.StringLenBetween(8, 100)),
+			},
+			"password_wo": {
+				Description: "Write-only password for the user account. The same rules as for `password` apply. " +
+					"Terraform does not store this value in the plan or the state. One of `password` or `password_wo` " +
+					"is required on create. The provider sends this value on create, and on update only when " +
+					"`password_wo_version` changes. `hash_function` applies to this value in the same way as to " +
+					"`password`. To set a new hashed password, change `password_wo` and increment " +
+					"`password_wo_version`. A change to `hash_function` alone does not send a password. " +
+					"A switch from `password` to `password_wo` sets the password through the API once, even if the " +
+					"value is the same. Google Workspace handles this as a password change, which can have side " +
+					"effects, for example on the sessions of the user. " +
+					"Write-only arguments require Terraform 1.11 or later.",
+				Type:             schema.TypeString,
+				Optional:         true,
+				Sensitive:        true,
+				WriteOnly:        true,
+				ConflictsWith:    []string{"password"},
+				RequiredWith:     []string{"password_wo_version"},
+				ValidateDiagFunc: validation.ToDiagFunc(validation.StringLenBetween(8, 100)),
+			},
+			"password_wo_version": {
+				Description: "Version of `password_wo`. Must be 1 or greater. Terraform stores this value in the " +
+					"state. Change this value to send the current `password_wo` value to the API on the next apply. " +
+					"After an import, this value is empty, so the first apply sends `password_wo`.",
+				Type:     schema.TypeInt,
+				Optional: true,
+				// The SDK reads a null value as 0, so a change from null to 0 is not a change.
+				ValidateDiagFunc: validation.ToDiagFunc(validation.IntAtLeast(1)),
+				RequiredWith:     []string{"password_wo"},
 			},
 			"hash_function": {
 				Description: "Stores the hash format of the password property. We recommend sending the password " +
 					"property value as a base 16 bit hexadecimal-encoded hash value. Set the hashFunction values " +
-					"as either the SHA-1, MD5, or crypt hash format.",
+					"as either the SHA-1, MD5, or crypt hash format. Applies to `password` and `password_wo`.",
 				Type:     schema.TypeString,
 				Optional: true,
 			},
@@ -1090,12 +1132,14 @@ func resourceUser() *schema.Resource {
 				Description: "Recovery email of the user.",
 				Type:        schema.TypeString,
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"recovery_phone": {
 				Description: "Recovery phone of the user. The phone number must be in the E.164 format, " +
 					"starting with the plus sign (+). Example: +16506661212.",
-				Type:     schema.TypeString,
-				Optional: true,
+				Type:      schema.TypeString,
+				Optional:  true,
+				Sensitive: true,
 			},
 		},
 	}
@@ -1107,10 +1151,20 @@ func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta interf
 	// use the meta value to retrieve your client from the provider configure method
 	client := meta.(*apiClient)
 
-	if d.Get("password").(string) == "" {
+	passwordWO, diags := userPasswordWO(d)
+	if diags.HasError() {
+		return diags
+	}
+
+	password := d.Get("password").(string)
+	if passwordWO != "" {
+		password = passwordWO
+	}
+
+	if password == "" {
 		diags = append(diags, diag.Diagnostic{
 			Severity: diag.Error,
-			Summary:  fmt.Sprintf("Password is required when creating a new user"),
+			Summary:  userPasswordRequiredSummary,
 		})
 
 		return diags
@@ -1131,7 +1185,7 @@ func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta interf
 
 	userObj := directory.User{
 		PrimaryEmail:               primaryEmail,
-		Password:                   d.Get("password").(string),
+		Password:                   password,
 		HashFunction:               d.Get("hash_function").(string),
 		Suspended:                  d.Get("suspended").(bool),
 		ChangePasswordAtNextLogin:  d.Get("change_password_at_next_login").(bool),
@@ -1221,6 +1275,97 @@ func resourceUserCreate(ctx context.Context, d *schema.ResourceData, meta interf
 
 	log.Printf("[DEBUG] Finished creating User %q: %#v", d.Id(), primaryEmail)
 	return resourceUserRead(ctx, d, meta)
+}
+
+const userPasswordRequiredSummary = "Password is required when creating a new user: set `password` or `password_wo`"
+
+// resourceUserCustomizeDiff makes sure that a new user has a password.
+// The schema cannot use ExactlyOneOf for this, because a user that was imported
+// without a password in the configuration must stay valid. ConflictsWith makes
+// sure that the configuration sets at most one of the two arguments.
+func resourceUserCustomizeDiff(_ context.Context, d *schema.ResourceDiff, _ interface{}) error {
+	// The SDK does not call CustomizeDiff when it plans to replace a tainted
+	// user. The check in resourceUserCreate then reports a missing password.
+	if d.Id() != "" {
+		return nil
+	}
+
+	if !userPasswordConfigured(d.GetRawConfig()) {
+		return fmt.Errorf("%s", userPasswordRequiredSummary)
+	}
+
+	return nil
+}
+
+// userPasswordConfigured returns true if the raw configuration sets password or
+// password_wo. Write-only values are only available in the raw configuration.
+// An unknown value counts as set, because it is known at apply time.
+func userPasswordConfigured(rawConfig cty.Value) bool {
+	if rawConfig.IsNull() || !rawConfig.IsKnown() {
+		return true
+	}
+
+	for _, attr := range []string{"password", "password_wo"} {
+		if !rawConfig.Type().HasAttribute(attr) {
+			continue
+		}
+
+		if !rawConfig.GetAttr(attr).IsNull() {
+			return true
+		}
+	}
+
+	return false
+}
+
+// userPasswordWO returns the password_wo value from the raw configuration, or an
+// empty string if the value is null or unknown. Get() cannot read write-only values.
+func userPasswordWO(d *schema.ResourceData) (string, diag.Diagnostics) {
+	v, diags := d.GetRawConfigAt(cty.GetAttrPath("password_wo"))
+	if diags.HasError() {
+		return "", diags
+	}
+
+	if v.IsNull() || !v.IsKnown() || !v.Type().Equals(cty.String) {
+		return "", nil
+	}
+
+	return v.AsString(), nil
+}
+
+// userPasswordForUpdate returns the password that the update request sends, and
+// true if the request sends a password.
+func userPasswordForUpdate(d *schema.ResourceData) (string, bool, diag.Diagnostics) {
+	passwordWO := ""
+	if d.HasChange("password_wo_version") {
+		var diags diag.Diagnostics
+		passwordWO, diags = userPasswordWO(d)
+		if diags.HasError() {
+			return "", false, diags
+		}
+	}
+
+	password, send := userPasswordToSend(d.HasChange("password"), d.Get("password").(string),
+		d.HasChange("password_wo_version"), passwordWO)
+
+	return password, send, nil
+}
+
+// userPasswordToSend decides which password the update request sends, if any.
+// A write-only value has no prior state to compare with. A change to
+// password_wo_version is the only signal to send password_wo again.
+// password_wo has priority, so that a switch from password to password_wo
+// sends the new password and not an empty one.
+func userPasswordToSend(passwordChanged bool, password string, passwordWOVersionChanged bool, passwordWO string) (string, bool) {
+	if passwordWOVersionChanged && passwordWO != "" {
+		return passwordWO, true
+	}
+
+	if passwordChanged {
+		return password, true
+	}
+
+	return "", false
 }
 
 func resourceUserRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -1320,6 +1465,29 @@ func resourceUserRead(ctx context.Context, d *schema.ResourceData, meta interfac
 }
 
 func resourceUserUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	if !d.IsNewResource() && !d.HasChangesExcept() {
+		// No attribute value changed, so there is nothing to send. This is a
+		// defensive guard for an empty diff. Terraform 1.15 does not call the
+		// provider for a plan that only changes the sensitivity of attributes
+		// (for example after a provider upgrade), but other versions might.
+		log.Printf("[DEBUG] No attribute of User %q changed, skipping the update", d.Id())
+		return nil
+	}
+
+	diags := resourceUserUpdateUser(ctx, d, meta)
+	if diags.HasError() && !d.IsNewResource() {
+		// Keep the prior state. Without this, the SDK saves the planned values when
+		// the update fails, for example a new password_wo_version. The next apply
+		// then plans no change and does not send the password again. If the
+		// password write succeeded and a later step failed, the next apply sends
+		// the password again; that second write is the safe direction.
+		d.Partial(true)
+	}
+
+	return diags
+}
+
+func resourceUserUpdateUser(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
 
 	// use the meta value to retrieve your client from the provider configure method
@@ -1357,11 +1525,20 @@ func resourceUserUpdate(ctx context.Context, d *schema.ResourceData, meta interf
 		}
 	}
 
-	if d.HasChange("password") {
-		userObj.Password = d.Get("password").(string)
+	password, send, diags := userPasswordForUpdate(d)
+	if diags.HasError() {
+		return diags
+	}
+
+	if send {
+		userObj.Password = password
 
 		if userObj.Password == "" {
 			forceSendFields = append(forceSendFields, "Password")
+		} else {
+			// hashFunction describes the password in the same request. Send it with
+			// every new password, so that a hashed password is not read as plain text.
+			userObj.HashFunction = d.Get("hash_function").(string)
 		}
 	}
 

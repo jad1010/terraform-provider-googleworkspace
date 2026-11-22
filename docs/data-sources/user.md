@@ -47,7 +47,7 @@ output "is_user_admin" {
 - `emails` (List of Object) A list of the user's email addresses. The maximum allowed data size is 10Kb. (see [below for nested schema](#nestedatt--emails))
 - `etag` (String) ETag of the resource.
 - `external_ids` (List of Object) A list of external IDs for the user, such as an employee or network ID. The maximum allowed data size is 2Kb. (see [below for nested schema](#nestedatt--external_ids))
-- `hash_function` (String) Stores the hash format of the password property. We recommend sending the password property value as a base 16 bit hexadecimal-encoded hash value. Set the hashFunction values as either the SHA-1, MD5, or crypt hash format.
+- `hash_function` (String) The API does not return the hash format of the password, so this value is always empty.
 - `ims` (List of Object) The user's Instant Messenger (IM) accounts. A user account can have multiple ims properties. But, only one of these ims properties can be the primary IM contact. The maximum allowed data size is 2Kb. (see [below for nested schema](#nestedatt--ims))
 - `include_in_global_address_list` (Boolean) Indicates if the user's profile is visible in the Google Workspace global address list when the contact sharing feature is enabled for the domain.
 - `ip_allowlist` (Boolean) If true, the user's IP address is added to the allow list.
@@ -64,11 +64,11 @@ output "is_user_admin" {
 - `non_editable_aliases` (List of String) asps.list of the user's non-editable alias email addresses. These are typically outside the account's primary domain or sub-domain.
 - `org_unit_path` (String) The full path of the parent organization associated with the user. If the parent organization is the top-level, it is represented as a forward slash (/).
 - `organizations` (List of Object) A list of organizations the user belongs to. The maximum allowed data size is 10Kb. (see [below for nested schema](#nestedatt--organizations))
-- `password` (String) Stores the password for the user account. A password can contain any combination of ASCII characters. A minimum of 8 characters is required. The maximum length is 100 characters. As the API does not return the value of password, this field is write-only, and the value stored in the state will be what is provided in the configuration. The field is required on create and will be empty on import.
+- `password` (String) The API does not return the password of the user, so this value is always empty.
 - `phones` (List of Object) A list of the user's phone numbers. The maximum allowed data size is 1Kb. (see [below for nested schema](#nestedatt--phones))
 - `posix_accounts` (List of Object) A list of POSIX account information for the user. (see [below for nested schema](#nestedatt--posix_accounts))
-- `recovery_email` (String) Recovery email of the user.
-- `recovery_phone` (String) Recovery phone of the user. The phone number must be in the E.164 format, starting with the plus sign (+). Example: +16506661212.
+- `recovery_email` (String, Sensitive) Recovery email of the user.
+- `recovery_phone` (String, Sensitive) Recovery phone of the user. The phone number must be in the E.164 format, starting with the plus sign (+). Example: +16506661212.
 - `relations` (List of Object) A list of the user's relationships to other users. The maximum allowed data size for this field is 2Kb. (see [below for nested schema](#nestedatt--relations))
 - `ssh_public_keys` (List of Object) A list of SSH public keys. The maximum allowed data size is 10Kb. (see [below for nested schema](#nestedatt--ssh_public_keys))
 - `suspended` (Boolean) Indicates if user is suspended.

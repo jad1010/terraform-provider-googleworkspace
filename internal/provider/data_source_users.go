@@ -14,6 +14,7 @@ func dataSourceUsers() *schema.Resource {
 	// Generate datasource schema from resource
 	dsUserSchema := datasourceSchemaFromResourceSchema(resourceUser().Schema)
 	removeFieldsFromSchema(dsUserSchema, "on_delete_data_transfer")
+	fixUserDatasourceSchema(dsUserSchema)
 
 	return &schema.Resource{
 		// This description is used by the documentation generator and the language server.

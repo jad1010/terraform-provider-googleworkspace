@@ -1,20 +1,36 @@
 ## 0.13.0 (Unreleased)
 
+BREAKING CHANGES:
+
+* directory: `recovery_email` and `recovery_phone` are now sensitive in the `googleworkspace_user` resource and in the `googleworkspace_user` data source. Terraform hides their values in plan and apply output. A root module output that refers to these values now needs `sensitive = true`. To use a value where Terraform does not accept sensitive values, such as `for_each` or `count`, wrap it in `nonsensitive()`
+
 NOTES:
 
 * gmail: `googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` now use `access_token` when it is set, as the documented precedence says. Before, the Gmail client ignored `access_token`, so a configuration with `access_token` and `credentials` (or application default credentials that can use domain-wide delegation) but no `service_account` worked for Gmail resources. Such a configuration now fails with "service_account is required to impersonate a user with the access_token authentication". Set `service_account` to a service account that has domain-wide delegation, and grant the principal of `access_token` the Service Account Token Creator role on it, or remove `access_token`.
+* directory: the `googleworkspace_users` data source still shows `recovery_email` and `recovery_phone` in plain text. The provider SDK cannot mark one attribute inside the computed `users` list as sensitive, and marking the whole list sensitive would hide all user data
+* directory: after the upgrade, the next refresh writes the new sensitive marks of `googleworkspace_user` to the state. A plan with `-refresh=false` instead shows a one-time update in place for each existing user. Applying that update makes no API call
 
 SECURITY:
 
 * build: release binaries are built with Go 1.27.4. `go.mod` now sets `toolchain go1.27.4`, and the release workflow reads it. Earlier releases were built with Go 1.25.0 and carried known standard library vulnerabilities.
-* deps: updated all Go module dependencies, including `golang.org/x/net`, `golang.org/x/crypto`, `google.golang.org/grpc` and `github.com/hashicorp/terraform-plugin-sdk/v2` (2.33.0 to 2.41.1). The provider schema is unchanged. Building the provider now requires Go 1.26 or later, because the updated dependencies require it.
+* deps: updated all Go module dependencies, including `golang.org/x/net`, `golang.org/x/crypto`, `google.golang.org/grpc` and `github.com/hashicorp/terraform-plugin-sdk/v2` (2.33.0 to 2.41.1). The dependency update does not change the provider schema. Building the provider now requires Go 1.26 or later, because the updated dependencies require it.
 * ci: new `govulncheck` workflow on push, pull request, and weekly. Dependabot groups Go module updates.
 * provider: debug logs (`TF_LOG=DEBUG` or higher) no longer show passwords or other secrets. Request and response bodies were scrubbed only for a top-level `accessToken`, so the `password` of `googleworkspace_user` and the SMTP password of `googleworkspace_gmail_send_as_alias` were written to the log in plain text. These JSON keys are now scrubbed at any depth, with a key match that is not case-sensitive: `password`, `newPassword`, `recoveryEmail`, `recoveryPhone`, `verificationCode`, `verificationCodes`, `accessToken`, `access_token`, `refresh_token`, `id_token`, `client_secret`, `private_key` and `privateKey`. The values of the `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Goog-Api-Key` and `X-Goog-Iam-Authorization-Token` headers are scrubbed too. Bodies are read directly instead of from the wire dump, so chunked HTTP/1.1 responses and HTTP/2 responses are scrubbed. A body that is not exactly one JSON value (for example a multipart body) keeps its text, but the string value of each scrubbed key is replaced. A JSON body is logged indented with sorted keys, and numbers and HTML characters are kept as they are. A logging failure no longer makes the API call fail: a warning is logged and the body is left out of the debug log.
+
+FEATURES:
+
+* directory: added the write-only `password_wo` argument and the `password_wo_version` argument to `googleworkspace_user`. Terraform does not store `password_wo` in the plan or the state. Change `password_wo_version` to set a new password. `password_wo` conflicts with `password`, and `hash_function` applies to both. `password_wo_version` must be 1 or greater. To set a new hashed password, change `password_wo` and increment `password_wo_version`: a change to `hash_function` alone sends no password. A switch from `password` to `password_wo` sets the password through the API once, even if the value is the same. Google Workspace handles this as a password change, which can have side effects, for example on the sessions of the user. Write-only arguments require Terraform 1.11 or later
+
+IMPROVEMENTS:
+
+* directory: `googleworkspace_user` now reports a missing password at plan time on create, not at apply time. A new user needs `password` or `password_wo`. An imported user can omit both
+* directory: `googleworkspace_user` shows a warning that suggests `password_wo` when the configuration sets `password`. The warning shows only with Terraform 1.11 or later, which supports write-only arguments. It also shows when `password` gets its value from a variable, even if that value can be null
 
 BUG FIXES:
 
 * gmail: `googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` now work with `access_token` and `service_account` authentication instead of failing with "Error 400: Precondition check failed" ([#39](https://github.com/SamuZad/terraform-provider-googleworkspace/issues/39))
 * gmail: `googleworkspace_gmail_send_as_alias` now sends the mailbox owner's address (`primary_email`) as the Gmail user ID instead of `me`. With credentials that cannot impersonate a user, such as `gcloud` user application default credentials, the old read, update and delete calls acted on the send-as aliases of the caller's own mailbox (create already failed with such credentials); they now fail with a delegation error
+* directory: `googleworkspace_user` now sends `hash_function` with each new password on update. Before, a changed hashed password was sent without its hash format
 
 ## 0.8.0 (Unreleased)
 

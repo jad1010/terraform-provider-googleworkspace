@@ -15,6 +15,11 @@ func dataSourceUser() *schema.Resource {
 	dsSchema := datasourceSchemaFromResourceSchema(resourceUser().Schema)
 	addExactlyOneOfFieldsToSchema(dsSchema, "id", "primary_email")
 	removeFieldsFromSchema(dsSchema, "on_delete_data_transfer")
+	fixUserDatasourceSchema(dsSchema)
+	// datasourceSchemaFromResourceSchema does not copy Sensitive. Mark the
+	// recovery contact attributes as sensitive, as in the resource.
+	dsSchema["recovery_email"].Sensitive = true
+	dsSchema["recovery_phone"].Sensitive = true
 
 	return &schema.Resource{
 		// This description is used by the documentation generator and the language server.

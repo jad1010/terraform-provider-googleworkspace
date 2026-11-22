@@ -113,6 +113,121 @@ func TestAccResourceUser_noPassword(t *testing.T) {
 	})
 }
 
+func TestAccResourceUser_passwordWO(t *testing.T) {
+	t.Parallel()
+
+	domainName := os.Getenv("GOOGLEWORKSPACE_DOMAIN")
+
+	if domainName == "" {
+		t.Skip("GOOGLEWORKSPACE_DOMAIN needs to be set to run this test")
+	}
+
+	testAccSkipUnlessWriteOnlySupported(t)
+
+	testUserVals := map[string]interface{}{
+		"domainName":        domainName,
+		"userEmail":         fmt.Sprintf("tf-test-%s", acctest.RandString(10)),
+		"passwordWO":        acctest.RandString(10),
+		"passwordWOVersion": 1,
+		"hashFunction":      "",
+	}
+
+	rotatedVals := map[string]interface{}{
+		"domainName":        domainName,
+		"userEmail":         testUserVals["userEmail"],
+		"passwordWO":        acctest.RandString(10),
+		"passwordWOVersion": 2,
+		"hashFunction":      "",
+	}
+
+	hashedVals := map[string]interface{}{
+		"domainName":        domainName,
+		"userEmail":         testUserVals["userEmail"],
+		"passwordWO":        "34819d7beeabb9260a5c854bc85b3e44",
+		"passwordWOVersion": 3,
+		"hashFunction":      "MD5",
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: providerFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceUser_passwordWO(testUserVals),
+				Check:  testAccCheckUserPasswordWOState("1"),
+			},
+			{
+				// password_wo is never in the state, and an import cannot read password_wo_version.
+				ResourceName:            "googleworkspace_user.my-new-user",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"etag", "password", "password_wo_version"},
+			},
+			{
+				// Changing password_wo_version sends the new password_wo value.
+				Config: testAccResourceUser_passwordWO(rotatedVals),
+				Check:  testAccCheckUserPasswordWOState("2"),
+			},
+			{
+				// hash_function applies to password_wo in the same way as to password.
+				Config: testAccResourceUser_passwordWO(hashedVals),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckUserPasswordWOState("3"),
+					resource.TestCheckResourceAttr("googleworkspace_user.my-new-user", "hash_function", "MD5"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccResourceUser_passwordToPasswordWO(t *testing.T) {
+	t.Parallel()
+
+	domainName := os.Getenv("GOOGLEWORKSPACE_DOMAIN")
+
+	if domainName == "" {
+		t.Skip("GOOGLEWORKSPACE_DOMAIN needs to be set to run this test")
+	}
+
+	testAccSkipUnlessWriteOnlySupported(t)
+
+	testUserVals := map[string]interface{}{
+		"domainName":        domainName,
+		"userEmail":         fmt.Sprintf("tf-test-%s", acctest.RandString(10)),
+		"password":          acctest.RandString(10),
+		"passwordWO":        acctest.RandString(10),
+		"passwordWOVersion": 1,
+		"hashFunction":      "",
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: providerFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceUser_basic(testUserVals),
+				Check: resource.TestCheckResourceAttr("googleworkspace_user.my-new-user", "password",
+					testUserVals["password"].(string)),
+			},
+			{
+				// The switch removes the password from the state and sends password_wo.
+				Config: testAccResourceUser_passwordWO(testUserVals),
+				Check:  testAccCheckUserPasswordWOState("1"),
+			},
+		},
+	})
+}
+
+// testAccCheckUserPasswordWOState checks that the state has no password value
+// and has the expected password_wo_version.
+func testAccCheckUserPasswordWOState(version string) resource.TestCheckFunc {
+	return resource.ComposeTestCheckFunc(
+		resource.TestCheckNoResourceAttr("googleworkspace_user.my-new-user", "password_wo"),
+		resource.TestCheckResourceAttr("googleworkspace_user.my-new-user", "password", ""),
+		resource.TestCheckResourceAttr("googleworkspace_user.my-new-user", "password_wo_version", version),
+	)
+}
+
 func TestAccResourceUser_full(t *testing.T) {
 	t.Parallel()
 
@@ -385,6 +500,28 @@ func testAccResourceUser_basic(testUserVals map[string]interface{}) string {
 resource "googleworkspace_user" "my-new-user" {
   primary_email = "%{userEmail}@%{domainName}"
   password = "%{password}"
+
+  name {
+    family_name = "Scott"
+    given_name = "Michael"
+  }
+
+  timeouts {
+    update = "15m"
+  }
+}
+`, testUserVals)
+}
+
+func testAccResourceUser_passwordWO(testUserVals map[string]interface{}) string {
+	return Nprintf(`
+resource "googleworkspace_user" "my-new-user" {
+  primary_email       = "%{userEmail}@%{domainName}"
+  password_wo         = "%{passwordWO}"
+  password_wo_version = %{passwordWOVersion}
+  hash_function       = "%{hashFunction}"
+
+  change_password_at_next_login = true
 
   name {
     family_name = "Scott"

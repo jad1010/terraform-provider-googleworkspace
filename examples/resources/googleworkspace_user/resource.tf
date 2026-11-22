@@ -104,3 +104,25 @@ resource "googleworkspace_user" "dwight" {
 
   recovery_email = "dwightkschrute@example.com"
 }
+
+# Write-only password: Terraform does not store the password in the plan or the
+# state. This needs Terraform 1.11 or later. To set a new password, change
+# password_wo and increment password_wo_version.
+variable "michael_initial_password" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "googleworkspace_user" "michael" {
+  primary_email       = "michael.scott@example.com"
+  password_wo         = var.michael_initial_password
+  password_wo_version = 1
+
+  change_password_at_next_login = true
+
+  name {
+    family_name = "Scott"
+    given_name  = "Michael"
+  }
+}

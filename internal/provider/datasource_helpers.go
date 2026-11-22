@@ -83,6 +83,16 @@ func addExactlyOneOfFieldsToSchema(schema map[string]*schema.Schema, keys ...str
 	}
 }
 
+// fixUserDatasourceSchema removes the write-only password arguments from a user
+// datasource schema. The API never returns a password, so the datasource
+// password and hash_function values are always empty.
+func fixUserDatasourceSchema(schema map[string]*schema.Schema) {
+	removeFieldsFromSchema(schema, "password_wo", "password_wo_version")
+	schema["password"].Description = "The API does not return the password of the user, so this value is always empty."
+	schema["hash_function"].Description = "The API does not return the hash format of the password, so this value " +
+		"is always empty."
+}
+
 // removeFieldsFromSchema is a convenience func that removes a list of keys from the schema.
 // This is useful when the schema has been generated (using `datasourceSchemaFromResourceSchema` above for
 // example) and the datasource should not have certain fields, as they are not computed/stored by the Google API.

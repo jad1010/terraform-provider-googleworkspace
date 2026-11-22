@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,6 +99,82 @@ func testAccPreCheck(t *testing.T) {
 	if v := multiEnvSearch(credsEnvVars); v == "" {
 		t.Fatalf("One of %s must be set for acceptance tests", strings.Join(credsEnvVars, ", "))
 	}
+}
+
+// testAccSkipUnlessWriteOnlySupported skips the test if the Terraform CLI that
+// the test harness uses does not support write-only arguments. Terraform and
+// OpenTofu support write-only arguments from version 1.11.
+//
+// terraform-plugin-sdk/v2 helper/resource has no TerraformVersionChecks, so this
+// function selects the CLI binary with the same rules as resource.Test:
+//   - TF_ACC_TERRAFORM_PATH, if the file exists. If it does not exist and
+//     TF_ACC_TERRAFORM_VERSION is not set, the test fails.
+//   - TF_ACC_TERRAFORM_VERSION, the version that the harness installs.
+//   - terraform on PATH.
+//
+// If it finds none, the harness installs the latest Terraform, and the test runs.
+func testAccSkipUnlessWriteOnlySupported(t *testing.T) {
+	t.Helper()
+
+	binPath := ""
+	versionOutput := os.Getenv("TF_ACC_TERRAFORM_VERSION")
+
+	if p := os.Getenv("TF_ACC_TERRAFORM_PATH"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			binPath = p
+		} else if versionOutput == "" {
+			t.Fatalf("TF_ACC_TERRAFORM_PATH is set to %q, but the file is not available: %s", p, err)
+		}
+	} else if versionOutput == "" {
+		if p, err := exec.LookPath("terraform"); err == nil {
+			binPath = p
+		}
+	}
+
+	if binPath != "" {
+		cmd := exec.Command(binPath, "version")
+		// The harness runs the CLI in a temporary directory. Run it there too, so
+		// that version manager shims (mise, asdf) select the same version.
+		cmd.Dir = os.TempDir()
+		cmd.Env = append(os.Environ(), "CHECKPOINT_DISABLE=1")
+
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("cannot read the version of %s: %s", binPath, err)
+		}
+
+		versionOutput = string(out)
+	}
+
+	if versionOutput == "" {
+		return
+	}
+
+	supported, err := writeOnlySupported(versionOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !supported {
+		t.Skipf("write-only arguments need Terraform or OpenTofu 1.11 or later, found %q",
+			strings.SplitN(strings.TrimSpace(versionOutput), "\n", 2)[0])
+	}
+}
+
+var cliVersionRegexp = regexp.MustCompile(`v?(\d+)\.(\d+)\.\d+`)
+
+// writeOnlySupported returns true if the version string, or the first version
+// in the output of "terraform version" or "tofu version", is 1.11 or later.
+func writeOnlySupported(versionOutput string) (bool, error) {
+	m := cliVersionRegexp.FindStringSubmatch(versionOutput)
+	if m == nil {
+		return false, fmt.Errorf("cannot find a version in %q", versionOutput)
+	}
+
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+
+	return major > 1 || (major == 1 && minor >= 11), nil
 }
 
 func multiEnvSearch(ks []string) string {
