@@ -279,7 +279,9 @@ is not in parentheses, except `admin.datatransfer` and `apps.licensing`. It does
 
 | Resource or data source | API | Scopes |
 |---|---|---|
+| `googleworkspace_chrome_group_policy` | Chrome Policy | `chrome.management.policy` |
 | `googleworkspace_chrome_policy` | Chrome Policy | `chrome.management.policy` |
+| `googleworkspace_chrome_policy_group_priority_ordering` | Chrome Policy | `chrome.management.policy` |
 | `googleworkspace_domain` | Admin SDK Directory | `admin.directory.domain` |
 | `googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
 | `googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
@@ -297,6 +299,7 @@ is not in parentheses, except `admin.datatransfer` and `apps.licensing`. It does
 | `googleworkspace_user` | Admin SDK Directory, Data Transfer | `admin.directory.user`; `admin.directory.userschema` if the user has custom schema values; `admin.datatransfer` with `on_delete_data_transfer` |
 | `googleworkspace_user_delegate` | Gmail (as the mailbox owner) | `gmail.settings.basic`, `gmail.settings.sharing` |
 | `data.googleworkspace_chrome_policy_schema` | Chrome Policy | `chrome.management.policy` |
+| `data.googleworkspace_chrome_resolved_policies` | Chrome Policy | `chrome.management.policy` |
 | `data.googleworkspace_domain` | Admin SDK Directory | `admin.directory.domain` |
 | `data.googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
 | `data.googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
@@ -366,7 +369,8 @@ Compliance scope differs by API and impact level:
   impact levels, check
   [Google's FedRAMP and DoD compliance scope page](https://docs.cloud.google.com/docs/security/compliance/fedramp-dod-compliance-scope)
   for your level.
-* The Chrome Policy API (`googleworkspace_chrome_policy`) is not named in Google's FedRAMP or DoD scope sources.
+* The Chrome Policy API (`googleworkspace_chrome_policy`, `googleworkspace_chrome_group_policy`,
+  `googleworkspace_chrome_policy_group_priority_ordering`, and `data.googleworkspace_chrome_resolved_policies`) is not named in Google's FedRAMP or DoD scope sources.
 
 Google's documentation does not prohibit domain-wide delegation in these editions. If multi-party approval is on, a change to a domain-wide
 delegation grant can need approval from a second super admin
@@ -407,5 +411,5 @@ Do not set this variable outside a test environment.
 - `customer_id` (String) The customer id provided with your Google Workspace subscription. It is found in the admin console under Account Settings.
 - `impersonated_user_email` (String) The impersonated user's email with access to the Admin APIs can access the Admin SDK Directory API. `impersonated_user_email` is required for all services except group and user management.
 - `oauth_scopes` (List of String) The list of the scopes required for your application (for a list of possible scopes, see [Authorize requests](https://developers.google.com/admin-sdk/directory/v1/guides/authorizing))
-- `service_account` (String) The service account used to create the provided `access_token` if authenticating using the `access_token` method and needing to impersonate a user. This service account will require the GCP role `Service Account Token Creator` if needing to impersonate a user. Gmail resources (`googleworkspace_gmail_send_as_alias`, `googleworkspace_user_delegate`) always impersonate the mailbox owner, so with `access_token` they need `service_account`, the `Service Account Token Creator` role for the `access_token` principal on it, and domain-wide delegation for it.
+- `service_account` (String) The service account used to create the provided `access_token` if authenticating using the `access_token` method and needing to impersonate a user. This service account will require the GCP role `Service Account Token Creator` if needing to impersonate a user. Gmail resources (`googleworkspace_gmail_send_as_alias`, `googleworkspace_gmail_user_settings`, `googleworkspace_user_delegate`) always impersonate the mailbox owner, so with `access_token` they need `service_account`, the `Service Account Token Creator` role for the `access_token` principal on it, and domain-wide delegation for it.
 - `user_project` (String) The Google Cloud project to use for quota and billing of API requests (the quota project). The provider sends it in the `x-goog-user-project` header of every API request, including the IAM Credentials request that signs the domain-wide delegation JWT. Each API that the provider calls (for example Admin SDK, Groups Settings, Gmail, Chrome Policy, Cloud Identity, and IAM Service Account Credentials) must be enabled in this project. The principal of each request needs the `serviceusage.services.use` permission on the project. With domain-wide delegation, the principal of the Workspace API requests is expected to be the impersonated user; the principal of the IAM Credentials request is the principal of `access_token`. The provider does not use the `quota_project_id` field of a credentials file. Can also be set with the `GOOGLE_CLOUD_QUOTA_PROJECT` environment variable. The client library reads that variable itself, so it still sends the header when `user_project` is set to an empty string.

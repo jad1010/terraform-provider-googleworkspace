@@ -250,7 +250,9 @@ is not in parentheses, except `admin.datatransfer` and `apps.licensing`. It does
 
 | Resource or data source | API | Scopes |
 |---|---|---|
+| `googleworkspace_chrome_group_policy` | Chrome Policy | `chrome.management.policy` |
 | `googleworkspace_chrome_policy` | Chrome Policy | `chrome.management.policy` |
+| `googleworkspace_chrome_policy_group_priority_ordering` | Chrome Policy | `chrome.management.policy` |
 | `googleworkspace_domain` | Admin SDK Directory | `admin.directory.domain` |
 | `googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
 | `googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
@@ -268,6 +270,7 @@ is not in parentheses, except `admin.datatransfer` and `apps.licensing`. It does
 | `googleworkspace_user` | Admin SDK Directory, Data Transfer | `admin.directory.user`; `admin.directory.userschema` if the user has custom schema values; `admin.datatransfer` with `on_delete_data_transfer` |
 | `googleworkspace_user_delegate` | Gmail (as the mailbox owner) | `gmail.settings.basic`, `gmail.settings.sharing` |
 | `data.googleworkspace_chrome_policy_schema` | Chrome Policy | `chrome.management.policy` |
+| `data.googleworkspace_chrome_resolved_policies` | Chrome Policy | `chrome.management.policy` |
 | `data.googleworkspace_domain` | Admin SDK Directory | `admin.directory.domain` |
 | `data.googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
 | `data.googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
@@ -337,7 +340,8 @@ Compliance scope differs by API and impact level:
   impact levels, check
   [Google's FedRAMP and DoD compliance scope page](https://docs.cloud.google.com/docs/security/compliance/fedramp-dod-compliance-scope)
   for your level.
-* The Chrome Policy API (`googleworkspace_chrome_policy`) is not named in Google's FedRAMP or DoD scope sources.
+* The Chrome Policy API (`googleworkspace_chrome_policy`, `googleworkspace_chrome_group_policy`,
+  `googleworkspace_chrome_policy_group_priority_ordering`, and `data.googleworkspace_chrome_resolved_policies`) is not named in Google's FedRAMP or DoD scope sources.
 
 Google's documentation does not prohibit domain-wide delegation in these editions. If multi-party approval is on, a change to a domain-wide
 delegation grant can need approval from a second super admin

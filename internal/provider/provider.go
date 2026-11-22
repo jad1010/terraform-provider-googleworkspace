@@ -111,8 +111,8 @@ func New(version string) func() *schema.Provider {
 					Description: "The service account used to create the provided `access_token` if authenticating using " +
 						"the `access_token` method and needing to impersonate a user. This service account will require the " +
 						"GCP role `Service Account Token Creator` if needing to impersonate a user. Gmail resources " +
-						"(`googleworkspace_gmail_send_as_alias`, `googleworkspace_user_delegate`) always impersonate the " +
-						"mailbox owner, so with `access_token` they need `service_account`, the `Service Account Token Creator` " +
+						"(`googleworkspace_gmail_send_as_alias`, `googleworkspace_gmail_user_settings`, `googleworkspace_user_delegate`) " +
+						"always impersonate the mailbox owner, so with `access_token` they need `service_account`, the `Service Account Token Creator` " +
 						"role for the `access_token` principal on it, and domain-wide delegation for it.",
 					Type:     schema.TypeString,
 					Optional: true,
