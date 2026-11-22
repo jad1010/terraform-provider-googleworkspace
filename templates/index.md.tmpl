@@ -133,7 +133,7 @@ provider "googleworkspace" {
 }
 ```
 
-Gmail resources (`googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate`) always impersonate the mailbox owner. With `access_token`, they need `service_account`: the principal of the access token must have the `Service Account Token Creator` role on that service account, and the service account must have [domain-wide delegation](#using-domain-wide-delegation) for the Gmail scopes.
+Gmail resources (`googleworkspace_gmail_send_as_alias`, `googleworkspace_gmail_user_settings`, and `googleworkspace_user_delegate`) always impersonate the mailbox owner. With `access_token`, they need `service_account`: the principal of the access token must have the `Service Account Token Creator` role on that service account, and the service account must have [domain-wide delegation](#using-domain-wide-delegation) for the Gmail scopes.
 
 ```terraform
 provider "googleworkspace" {
@@ -196,7 +196,7 @@ login, or the metadata server) cannot impersonate a Google Workspace user withou
 service account key file. Without `impersonated_user_email`, application default credentials work for the
 [specific administrator roles](#using-specific-administrator-roles) setup.
 
-`googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` also work with this setup. They
+`googleworkspace_gmail_send_as_alias`, `googleworkspace_gmail_user_settings`, and `googleworkspace_user_delegate` also work with this setup. They
 impersonate the mailbox owner instead of `impersonated_user_email`, through the same `service_account`, so the
 domain-wide delegation grant must include the Gmail scopes in the [scope table](#oauth-scopes-by-resource).
 
@@ -255,6 +255,7 @@ is not in parentheses, except `admin.datatransfer` and `apps.licensing`. It does
 | `googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
 | `googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
 | `googleworkspace_gmail_send_as_alias` | Gmail (as the mailbox owner) | `gmail.settings.basic`, `gmail.settings.sharing` |
+| `googleworkspace_gmail_user_settings` | Gmail (as the mailbox owner) | `gmail.settings.basic`; `gmail.settings.sharing` with `auto_forwarding` |
 | `googleworkspace_group` | Admin SDK Directory | `admin.directory.group` |
 | `googleworkspace_group_member` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
 | `googleworkspace_group_members` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
