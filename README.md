@@ -11,6 +11,27 @@ This Google Workspace provider for Terraform allows you to manage domains, users
 
 This is a community-maintained fork of the [`hashicorp/terraform-provider-googleworkspace`](https://github.com/hashicorp/terraform-provider-googleworkspace) provider, which was archived by HashiCorp on 2025-06-30. It is published to the Terraform Registry as [`SamuZad/googleworkspace`](https://registry.terraform.io/providers/SamuZad/googleworkspace/latest). Please [file issues](https://github.com/SamuZad/terraform-provider-googleworkspace/issues/new/choose) generously and detail your experience while using the provider. We welcome your feedback.
 
+## About this fork
+
+This repository, [`jad1010/terraform-provider-googleworkspace`](https://github.com/jad1010/terraform-provider-googleworkspace), is a fork of `SamuZad/terraform-provider-googleworkspace`. It is published to the Terraform Registry as [`jad1010/googleworkspace`](https://registry.terraform.io/providers/jad1010/googleworkspace/latest) so that fixes and features are available before they are merged upstream. Changes are offered upstream as pull requests.
+
+```hcl
+terraform {
+  required_providers {
+    googleworkspace = {
+      source  = "jad1010/googleworkspace"
+      version = "~> 0.13"
+    }
+  }
+}
+```
+
+To move existing state from the upstream provider to this fork:
+
+```sh
+terraform state replace-provider registry.terraform.io/samuzad/googleworkspace registry.terraform.io/jad1010/googleworkspace
+```
+
 ## Maintainers
 
 This fork is maintained by [@SamuZad](https://github.com/SamuZad). It descends from the original `hashicorp/terraform-provider-googleworkspace`, which is no longer maintained upstream.
