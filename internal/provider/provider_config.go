@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -47,6 +48,7 @@ type apiClient struct {
 	ImpersonatedUserEmail string
 	ServiceAccount        string
 	UserAgent             string
+	UserProject           string
 
 	// licensingCustomer caches the unique customer ID for the License Manager
 	// API (see LicensingCustomerId). It is a pointer, so that copies of the
@@ -80,8 +82,64 @@ type licensingCustomerCache struct {
 	id string
 }
 
+// workspaceUniverseDomain is the only universe domain that this provider
+// supports. Google's documentation does not describe the Google Workspace APIs
+// in other universes, and the impersonate package does not support
+// domain-wide delegation in other universes.
+const workspaceUniverseDomain = "googleapis.com"
+
+// universeDomainEnvVar is the environment variable that google.golang.org/api
+// reads to select the universe domain of all API endpoints.
+const universeDomainEnvVar = "GOOGLE_CLOUD_UNIVERSE_DOMAIN"
+
+// validateUniverseDomain returns an error diagnostic if universeDomain is set
+// and is not googleapis.com. The source names where the value comes from, and
+// the remediation tells the user how to correct it.
+func validateUniverseDomain(universeDomain, source, remediation string) diag.Diagnostics {
+	if universeDomain == "" || universeDomain == workspaceUniverseDomain {
+		return nil
+	}
+
+	return diag.Diagnostics{
+		{
+			Severity: diag.Error,
+			Summary:  fmt.Sprintf("Unsupported universe domain %q", universeDomain),
+			Detail: fmt.Sprintf("%s sets the universe domain to %q. This provider supports only the %q "+
+				"universe: Google's documentation does not describe the Google Workspace APIs in other universes, "+
+				"and the client library does not support domain-wide delegation in other universes. %s",
+				source, universeDomain, workspaceUniverseDomain, remediation),
+		},
+	}
+}
+
+// validateCredentialsUniverseDomain checks the universe_domain field of
+// credentials from a JSON file (for example a service account key or a
+// workload identity federation configuration). Credentials from the metadata
+// server are not checked, because that needs a network call.
+func validateCredentialsUniverseDomain(creds *googleoauth.Credentials, source string) diag.Diagnostics {
+	if creds.UniverseDomainProvider != nil {
+		return nil
+	}
+
+	universeDomain, err := creds.GetUniverseDomain()
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	return validateUniverseDomain(universeDomain,
+		fmt.Sprintf("The universe_domain field of %s", source),
+		fmt.Sprintf("Use credentials whose universe_domain is %q.", workspaceUniverseDomain))
+}
+
 func (c *apiClient) loadAndValidate(ctx context.Context) diag.Diagnostics {
 	var diags diag.Diagnostics
+
+	diags = validateUniverseDomain(os.Getenv(universeDomainEnvVar),
+		fmt.Sprintf("The %s environment variable", universeDomainEnvVar),
+		fmt.Sprintf("Unset %s or set it to %q.", universeDomainEnvVar, workspaceUniverseDomain))
+	if diags.HasError() {
+		return diags
+	}
 
 	if len(c.ClientScopes) == 0 {
 		c.ClientScopes = DefaultClientScopes
@@ -114,11 +172,17 @@ func (c *apiClient) loadAndValidate(ctx context.Context) diag.Diagnostics {
 				return diags
 			}
 
+			opts := []option.ClientOption{option.WithTokenSource(oauth2.StaticTokenSource(token))}
+			if c.UserProject != "" {
+				// The IAM Credentials signJwt request also sends the quota project.
+				opts = append(opts, option.WithQuotaProject(c.UserProject))
+			}
+
 			tokenSource, err := impersonateTokenSource(ctx, impersonate.CredentialsConfig{
 				TargetPrincipal: c.ServiceAccount,
 				Scopes:          c.ClientScopes,
 				Subject:         c.ImpersonatedUserEmail,
-			}, option.WithTokenSource(oauth2.StaticTokenSource(token)))
+			}, opts...)
 			if err != nil {
 				return diag.FromErr(err)
 			}
@@ -153,6 +217,11 @@ func (c *apiClient) loadAndValidate(ctx context.Context) diag.Diagnostics {
 			return diag.FromErr(err)
 		}
 
+		diags = validateCredentialsUniverseDomain(creds, "the credentials in the credentials argument")
+		if diags.HasError() {
+			return diags
+		}
+
 		diags = c.SetupClient(ctx, creds)
 	} else {
 		credParams := googleoauth.CredentialsParams{
@@ -163,6 +232,12 @@ func (c *apiClient) loadAndValidate(ctx context.Context) diag.Diagnostics {
 		creds, err := googleoauth.FindDefaultCredentialsWithParams(ctx, credParams)
 		if err != nil {
 			return diag.FromErr(err)
+		}
+
+		diags = validateCredentialsUniverseDomain(creds,
+			"the application default credentials (GOOGLE_APPLICATION_CREDENTIALS or the gcloud application default credentials file)")
+		if diags.HasError() {
+			return diags
 		}
 
 		diags = c.SetupClient(ctx, creds)
@@ -176,8 +251,14 @@ func (c *apiClient) SetupClient(ctx context.Context, creds *googleoauth.Credenti
 
 	cleanCtx := context.WithValue(ctx, oauth2.HTTPClient, cleanhttp.DefaultClient())
 
+	opts := []option.ClientOption{option.WithTokenSource(creds.TokenSource)}
+	if c.UserProject != "" {
+		// Sends the x-goog-user-project header on each request.
+		opts = append(opts, option.WithQuotaProject(c.UserProject))
+	}
+
 	// 1. MTLS TRANSPORT/CLIENT - sets up proper auth headers
-	client, _, err := transport.NewHTTPClient(cleanCtx, option.WithTokenSource(creds.TokenSource))
+	client, _, err := transport.NewHTTPClient(cleanCtx, opts...)
 	if err != nil {
 		return diag.FromErr(err)
 	}

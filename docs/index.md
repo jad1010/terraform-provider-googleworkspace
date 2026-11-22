@@ -174,6 +174,224 @@ provider "googleworkspace" {
 
 You can also provide an exported service account key in the `credentials` parameter without specifying an `impersonated_user_email`.
 
+## Authenticating without service account keys
+
+Many Google Cloud organizations do not allow service account keys. Google enforces the
+`iam.managed.disableServiceAccountKeyCreation` organization policy constraint by default on organizations created on
+or after May 3, 2024, and some organizations created between February and April 2024 might also have it
+([Manage baseline constraints](https://docs.cloud.google.com/resource-manager/docs/manage-baseline-constraints),
+[Create and delete service account keys](https://docs.cloud.google.com/iam/docs/keys-create-delete), which names the
+older `iam.disableServiceAccountKeyCreation` constraint). Google's
+[domain-wide delegation best practices](https://knowledge.workspace.google.com/admin/apps/domain-wide-delegation-best-practices)
+also recommend that you avoid service
+account keys and use the `signJwt` API instead.
+
+The provider supports this keyless setup with three arguments:
+
+* `access_token`: a short-lived OAuth 2.0 access token for a principal that can impersonate the service account.
+  For example, a token from `gcloud auth print-access-token`, from the `google_service_account_access_token` data
+  source, or from a Workload Identity Federation step in your CI system. The token must have the
+  `https://www.googleapis.com/auth/cloud-platform` (or `https://www.googleapis.com/auth/iam`) scope. You can also set it with the `GOOGLE_OAUTH_ACCESS_TOKEN`
+  environment variable.
+* `service_account`: the email of the service account that has domain-wide delegation. The principal of the
+  `access_token` must have the Service Account Token Creator role (`roles/iam.serviceAccountTokenCreator`) on this
+  service account. The provider uses the IAM Service Account Credentials API (`iamcredentials.googleapis.com`) to
+  sign a JWT as this service account, and then exchanges the JWT for an access token at `oauth2.googleapis.com`.
+* `impersonated_user_email`: the Google Workspace user to impersonate through domain-wide delegation.
+
+```terraform
+provider "googleworkspace" {
+  customer_id             = "A01b123xz"
+  service_account         = "terraform-workspace@my-project.iam.gserviceaccount.com"
+  impersonated_user_email = "admin@example.com"
+  # access_token comes from the GOOGLE_OAUTH_ACCESS_TOKEN environment variable.
+}
+```
+
+```shell
+export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+terraform plan
+```
+
+In this mode, the provider requests the `oauth_scopes` (or the default scopes) for the delegated token, so the
+domain-wide delegation grant in the Admin console must include them.
+
+The provider does not refresh `access_token`. The token is valid for a limited time (usually one hour), and runs
+that take longer fail when it expires.
+
+Application default credentials (for example a Workload Identity Federation configuration file, a `gcloud` user
+login, or the metadata server) cannot impersonate a Google Workspace user without `access_token` and
+`service_account`. The provider only applies `impersonated_user_email` to application default credentials that are a
+service account key file. Without `impersonated_user_email`, application default credentials work for the
+[specific administrator roles](#using-specific-administrator-roles) setup.
+
+`googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` also work with this setup. They
+impersonate the mailbox owner instead of `impersonated_user_email`, through the same `service_account`, so the
+domain-wide delegation grant must include the Gmail scopes in the [scope table](#oauth-scopes-by-resource).
+
+## Universe domain
+
+The provider supports only the `googleapis.com` universe. We found no Google documentation of Google Workspace APIs
+in other universes, and the client library does not support domain-wide delegation in other universes. The provider
+stops with an error if the `GOOGLE_CLOUD_UNIVERSE_DOMAIN` environment
+variable, or the `universe_domain` field of JSON credentials, has a different value.
+
+Environment variables apply to the whole Terraform process, so `GOOGLE_CLOUD_UNIVERSE_DOMAIN` also applies to this
+provider. If another provider in the same configuration must use a different universe, set the universe with that
+provider's own argument (for example `universe_domain` in the `google` provider), or run it in a separate Terraform
+run.
+
+## Quota project
+
+Some Google Cloud APIs charge quota to the project of the caller. When the caller uses user credentials, for example
+an `access_token` from `gcloud auth print-access-token` for your own user account, these APIs need a quota project
+([Quota project overview](https://docs.cloud.google.com/docs/quotas/quota-project)). If API calls fail because no
+quota project is set, for example Cloud Identity API calls from `googleworkspace_dynamic_group`, set `user_project`
+(or the `GOOGLE_CLOUD_QUOTA_PROJECT` environment variable).
+
+When `user_project` is set:
+
+* The provider sends the value in the `x-goog-user-project` header of every API request, not only Cloud Identity
+  requests. In the keyless setup, the client library also sends it on the IAM Credentials `signJwt` request and on
+  the request to the OAuth 2.0 token endpoint (`oauth2.googleapis.com/token`).
+* Each API that the provider calls must be enabled in the quota project: for example the Admin SDK API, the Groups
+  Settings API, the Gmail API, the Chrome Policy API, the Cloud Identity API, and
+  the IAM Service Account Credentials API.
+* The principal of each request needs the `serviceusage.services.use` permission on the quota project, for example
+  through the Service Usage Consumer role (`roles/serviceusage.serviceUsageConsumer`). With domain-wide delegation,
+  the principal of the Workspace API requests is expected to be the impersonated user. The principal of the
+  `signJwt` request is the principal of `access_token`.
+
+The provider does not use the `quota_project_id` field of a credentials file; set `user_project` or
+`GOOGLE_CLOUD_QUOTA_PROJECT`. The client library reads `GOOGLE_CLOUD_QUOTA_PROJECT` itself, so it still sends the
+header when `user_project` is set to an empty string.
+
+The provider does not read `GOOGLE_BILLING_PROJECT`. The `google` provider uses that variable only when
+`user_project_override` is true.
+
+## OAuth scopes by resource
+
+The table shows the scopes that each resource and data source uses, from the API methods that the provider calls.
+Each scope has the `https://www.googleapis.com/auth/` prefix. Data sources also accept the `.readonly` form of the
+scopes they use, except `apps.groups.settings` and `cloud-platform` (use `cloud-identity.groups.readonly`). The default `oauth_scopes` list contains each scope in the table that
+is not in parentheses, except `admin.datatransfer`. It does not contain the alternatives in parentheses
+(`cloud-identity.groups` and `admin.directory.group.member`) or the `.readonly` forms. It also contains `admin.directory.customer`.
+
+| Resource or data source | API | Scopes |
+|---|---|---|
+| `googleworkspace_chrome_policy` | Chrome Policy | `chrome.management.policy` |
+| `googleworkspace_domain` | Admin SDK Directory | `admin.directory.domain` |
+| `googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
+| `googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
+| `googleworkspace_gmail_send_as_alias` | Gmail (as the mailbox owner) | `gmail.settings.basic`, `gmail.settings.sharing` |
+| `googleworkspace_group` | Admin SDK Directory | `admin.directory.group` |
+| `googleworkspace_group_member` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
+| `googleworkspace_group_members` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
+| `googleworkspace_group_settings` | Groups Settings | `apps.groups.settings` |
+| `googleworkspace_org_unit` | Admin SDK Directory | `admin.directory.orgunit` |
+| `googleworkspace_role` | Admin SDK Directory | `admin.directory.rolemanagement` |
+| `googleworkspace_role_assignment` | Admin SDK Directory | `admin.directory.rolemanagement` |
+| `googleworkspace_schema` | Admin SDK Directory | `admin.directory.userschema` |
+| `googleworkspace_user` | Admin SDK Directory, Data Transfer | `admin.directory.user`; `admin.directory.userschema` if the user has custom schema values; `admin.datatransfer` with `on_delete_data_transfer` |
+| `googleworkspace_user_delegate` | Gmail (as the mailbox owner) | `gmail.settings.basic`, `gmail.settings.sharing` |
+| `data.googleworkspace_chrome_policy_schema` | Chrome Policy | `chrome.management.policy` |
+| `data.googleworkspace_domain` | Admin SDK Directory | `admin.directory.domain` |
+| `data.googleworkspace_domain_alias` | Admin SDK Directory | `admin.directory.domain` |
+| `data.googleworkspace_dynamic_group` | Cloud Identity, Admin SDK Directory | `cloud-platform` (or `cloud-identity.groups`), `admin.directory.group` |
+| `data.googleworkspace_group` | Admin SDK Directory | `admin.directory.group` |
+| `data.googleworkspace_group_member` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
+| `data.googleworkspace_group_members` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
+| `data.googleworkspace_group_settings` | Groups Settings | `apps.groups.settings` |
+| `data.googleworkspace_groups` | Admin SDK Directory | `admin.directory.group` |
+| `data.googleworkspace_org_unit` | Admin SDK Directory | `admin.directory.orgunit` |
+| `data.googleworkspace_privileges` | Admin SDK Directory | `admin.directory.rolemanagement` |
+| `data.googleworkspace_role` | Admin SDK Directory | `admin.directory.rolemanagement` |
+| `data.googleworkspace_schema` | Admin SDK Directory | `admin.directory.userschema` |
+| `data.googleworkspace_user` | Admin SDK Directory | `admin.directory.user`; `admin.directory.userschema` if the user has custom schema values |
+| `data.googleworkspace_users` | Admin SDK Directory | `admin.directory.user`; `admin.directory.userschema` if a user has custom schema values |
+
+If you set `on_delete_data_transfer` on `googleworkspace_user`, add `https://www.googleapis.com/auth/admin.datatransfer`
+to `oauth_scopes` and to the domain-wide delegation grant.
+
+## Network requirements
+
+The provider calls these hosts:
+
+* `admin.googleapis.com` (Admin SDK Directory and Data Transfer)
+* `www.googleapis.com` (Groups Settings)
+* `gmail.googleapis.com`, `chromepolicy.googleapis.com`, and `cloudidentity.googleapis.com`
+* `iamcredentials.googleapis.com` and `oauth2.googleapis.com` when it uses `access_token` with `service_account`
+* for credentials, depending on their type:
+  * the `token_uri` of a service account key file (usually `oauth2.googleapis.com`)
+  * `oauth2.googleapis.com` for `gcloud` user application default credentials
+  * `sts.googleapis.com` for Workload Identity Federation, and `iamcredentials.googleapis.com` if the configuration
+    impersonates a service account
+  * the metadata server (`metadata.google.internal`) for the attached service account on Google Cloud runtimes
+
+Networks that use VPC Service Controls can resolve `*.googleapis.com` to `restricted.googleapis.com`. Google
+documents that `restricted.googleapis.com` does not support Google Workspace APIs
+([Configure Private Google Access](https://docs.cloud.google.com/vpc/docs/configure-private-google-access)), and
+`cloudidentity.googleapis.com` is not in the list of
+[services of the restricted VIP](https://docs.cloud.google.com/vpc-service-controls/docs/restricted-vip-services).
+On such a network, the Workspace API calls of the provider fail, and so do the calls of the dynamic group resource
+and data source. `iamcredentials.googleapis.com` is in that list and can be used inside a service perimeter. Route
+the other hosts through `private.googleapis.com` or the public endpoints. The Private Google Access page lists
+`*.googleapis.com` among the domains of `private.googleapis.com` and excludes Google Workspace web applications such as
+Gmail and Google Docs. It does not name Google Workspace APIs explicitly. Test the route from your runner before you
+depend on it.
+
+With `GOOGLE_API_USE_CLIENT_CERTIFICATE=true` and a client certificate, or with `GOOGLE_API_USE_MTLS_ENDPOINT=always`,
+the client library uses the `*.mtls.googleapis.com` endpoints (for example `admin.mtls.googleapis.com`). Groups
+Settings has no mTLS endpoint and stays on `www.googleapis.com`.
+
+## Government editions
+
+Google Workspace for Government and the FedRAMP High editions use the same API endpoints as other Google Workspace
+editions, so the provider needs no endpoint settings. Google lists the Google Workspace for Government offering among
+the editions and offerings that its FedRAMP High authorization covers
+([Google Workspace FedRAMP configuration guide](https://knowledge.workspace.google.com/admin/compliance/google-workspace-fedramp-configuration-guide)).
+A Google Cloud blog post about that authorization says that it covers Workspace's public cloud offering, so customers
+do not have to "purchase and deploy a separate 'gov cloud' instance"
+([Google Cloud blog](https://cloud.google.com/blog/topics/public-sector/google-cloud-achieves-new-public-sector-authorizations-google-workspace-earns-fedramp-high-key-google-cloud-platform-services-receive-dod-il4)).
+Compliance settings such as data regions and Assured Controls are Admin console settings, not provider settings.
+
+Compliance scope differs by API and impact level:
+
+* Google lists the Admin SDK, which includes the Directory API and the Groups Settings API, as FedRAMP High. For DoD
+  impact levels, check
+  [Google's FedRAMP and DoD compliance scope page](https://docs.cloud.google.com/docs/security/compliance/fedramp-dod-compliance-scope)
+  for your level.
+* The Chrome Policy API (`googleworkspace_chrome_policy`) is not named in Google's FedRAMP or DoD scope sources.
+
+Google's documentation does not prohibit domain-wide delegation in these editions. If multi-party approval is on, a change to a domain-wide
+delegation grant can need approval from a second super admin
+([Control API access with domain-wide delegation](https://knowledge.workspace.google.com/admin/apps/control-api-access-with-domain-wide-delegation)).
+
+Google's [hardening guidance for public sector tenants](https://docs.cloud.google.com/docs/security/compliance/disable-unsupported-workspace-features-public-sector)
+tells admins to block unconfigured third-party apps and to enable Context-Aware Access. If your tenant blocks
+unconfigured apps, configure the OAuth client ID of the provider's service account as a trusted app, or the API
+calls of the provider can be denied. If a Context-Aware Access policy blocks API access to apps when its context
+conditions are not met, check whether that policy also blocks the provider's service account.
+
+The provider cannot manage Context-Aware Access policies: no public API was found to assign them to Workspace
+apps. Access levels are available in the `google` provider as `google_access_context_manager_access_level`.
+
+## Debug logging
+
+~> Debug logs contain personal data. Treat them as sensitive.
+
+With `TF_LOG=DEBUG` (or `TRACE`), the provider logs each API request and response, with headers and bodies. Before it
+writes them, the provider replaces with `********` the values of passwords, OAuth tokens and client secrets, and a
+user's recovery email and phone. It matches these values by JSON key name, case-insensitively and at any depth of a
+JSON body, and it also replaces the values of `Authorization`-type headers. Names, primary email addresses, and other
+personal data still appear in the log.
+
+The Google API client library (`google.golang.org/api`) has its own logger. When the `GOOGLE_SDK_GO_LOGGING_LEVEL`
+environment variable is `debug`, the library logs each request and response, including the bodies, to the standard
+error of the provider. These entries do not go through the provider's scrubbing, so they include passwords, recovery email
+addresses, and recovery phone numbers.
+Do not set this variable outside a test environment.
+
 <!-- schema generated by tfplugindocs -->
 ## Schema
 
@@ -185,3 +403,4 @@ You can also provide an exported service account key in the `credentials` parame
 - `impersonated_user_email` (String) The impersonated user's email with access to the Admin APIs can access the Admin SDK Directory API. `impersonated_user_email` is required for all services except group and user management.
 - `oauth_scopes` (List of String) The list of the scopes required for your application (for a list of possible scopes, see [Authorize requests](https://developers.google.com/admin-sdk/directory/v1/guides/authorizing))
 - `service_account` (String) The service account used to create the provided `access_token` if authenticating using the `access_token` method and needing to impersonate a user. This service account will require the GCP role `Service Account Token Creator` if needing to impersonate a user. Gmail resources (`googleworkspace_gmail_send_as_alias`, `googleworkspace_user_delegate`) always impersonate the mailbox owner, so with `access_token` they need `service_account`, the `Service Account Token Creator` role for the `access_token` principal on it, and domain-wide delegation for it.
+- `user_project` (String) The Google Cloud project to use for quota and billing of API requests (the quota project). The provider sends it in the `x-goog-user-project` header of every API request, including the IAM Credentials request that signs the domain-wide delegation JWT. Each API that the provider calls (for example Admin SDK, Groups Settings, Gmail, Chrome Policy, Cloud Identity, and IAM Service Account Credentials) must be enabled in this project. The principal of each request needs the `serviceusage.services.use` permission on the project. With domain-wide delegation, the principal of the Workspace API requests is expected to be the impersonated user; the principal of the IAM Credentials request is the principal of `access_token`. The provider does not use the `quota_project_id` field of a credentials file. Can also be set with the `GOOGLE_CLOUD_QUOTA_PROJECT` environment variable. The client library reads that variable itself, so it still sends the header when `user_project` is set to an empty string.

@@ -117,6 +117,26 @@ func New(version string) func() *schema.Provider {
 					Type:     schema.TypeString,
 					Optional: true,
 				},
+
+				"user_project": {
+					Description: "The Google Cloud project to use for quota and billing of API requests (the quota " +
+						"project). The provider sends it in the `x-goog-user-project` header of every API request, " +
+						"including the IAM Credentials request that signs the domain-wide delegation JWT. Each API that " +
+						"the provider calls (for example Admin SDK, Groups Settings, Gmail, Chrome Policy, Cloud Identity, " +
+						"and IAM Service Account Credentials) must be enabled in this project. The " +
+						"principal of each request needs the `serviceusage.services.use` permission on the project. With " +
+						"domain-wide delegation, the principal of the Workspace API requests is expected to be the " +
+						"impersonated user; the principal of the IAM Credentials request is the principal of " +
+						"`access_token`. The provider does not use the `quota_project_id` field of a credentials file. " +
+						"Can also be set with the `GOOGLE_CLOUD_QUOTA_PROJECT` environment variable. The client library " +
+						"reads that variable itself, so it still sends the header when `user_project` is set to an empty " +
+						"string.",
+					Type: schema.TypeString,
+					DefaultFunc: schema.MultiEnvDefaultFunc([]string{
+						"GOOGLE_CLOUD_QUOTA_PROJECT",
+					}, nil),
+					Optional: true,
+				},
 			},
 			DataSourcesMap: map[string]*schema.Resource{
 				"googleworkspace_chrome_policy_schema": dataSourceChromePolicySchema(),
@@ -212,6 +232,11 @@ func configure(version string, p *schema.Provider) func(context.Context, *schema
 		// Get service account
 		if v, ok := d.GetOk("service_account"); ok {
 			config.ServiceAccount = v.(string)
+		}
+
+		// Get user project
+		if v, ok := d.GetOk("user_project"); ok {
+			config.UserProject = v.(string)
 		}
 
 		config.UserAgent = p.UserAgent("terraform-provider-googleworkspace", version)

@@ -22,6 +22,7 @@ NOTES:
 * licensing: the License Manager API documents `customerId` as the unique customer ID. If the provider's `customer_id` is `my_customer`, the license resources get the unique customer ID from the Directory API (`customers.get`) once and cache it.
 * gmail: `googleworkspace_gmail_user_settings` cannot delete Gmail settings. A destroy only removes the resource from the state and does not revert the IMAP, POP or automatic forwarding settings of the mailbox.
 * gmail: automatic forwarding in `googleworkspace_gmail_user_settings` needs the `https://www.googleapis.com/auth/gmail.settings.sharing` scope (in the default scopes) with domain-wide delegation, and a forwarding address of the mailbox that already has the verification status `accepted`. Create the forwarding address outside Terraform; addresses in the same domain may not require verification. `enabled = false` turns off the automatic forwarding setting of one mailbox only: it is not the admin setting that controls whether users can forward mail, and it does not stop forwarding by Gmail filters.
+* docs: documented authentication without service account keys, the OAuth scopes of each resource and data source, network requirements for VPC Service Controls, government editions, and the data that debug logs contain
 
 SECURITY:
 
@@ -36,6 +37,7 @@ FEATURES:
 * **New Resource:** `googleworkspace_license_assignment` ([#476](https://github.com/hashicorp/terraform-provider-googleworkspace/issues/476))
 * **New Datasource:** `googleworkspace_license_assignments` ([#476](https://github.com/hashicorp/terraform-provider-googleworkspace/issues/476))
 * **New Resource:** `googleworkspace_gmail_user_settings`
+* provider: added the `user_project` argument, which sends a quota project in the `x-goog-user-project` header of every API request, including the IAM Credentials `signJwt` and OAuth 2.0 token requests of domain-wide delegation. The `GOOGLE_CLOUD_QUOTA_PROJECT` environment variable, which the client library already read, is now documented; the library still applies it when `user_project` is empty. `user_project` applies to the Gmail resources (`googleworkspace_gmail_send_as_alias`, `googleworkspace_user_delegate`) together with the Gmail client fix in this release
 
 IMPROVEMENTS:
 
@@ -43,6 +45,7 @@ IMPROVEMENTS:
 * directory: `googleworkspace_user` now checks `primary_email` at plan time. A value without text before and after its last `@`, or a value with whitespace, fails validation. The check is loose and accepts valid addresses, such as plus addressing and subdomains. The API still does the full check. `on_delete_data_transfer.new_data_owner_email` is not checked, because it also accepts a unique user ID
 * directory: `googleworkspace_user` now reports a missing password at plan time on create, not at apply time. A new user needs `password` or `password_wo`. An imported user can omit both
 * directory: added `default_sender`, `favorite_replies_on_top`, `who_can_approve_members` and `who_can_ban_users` to `googleworkspace_group_settings` and its data source ([#489](https://github.com/hashicorp/terraform-provider-googleworkspace/issues/489))
+* provider: configuration now fails with a clear error when `GOOGLE_CLOUD_UNIVERSE_DOMAIN` or the `universe_domain` field of the credentials is not `googleapis.com`, because Google Workspace APIs and domain-wide delegation are only available in that universe. The error names the source of the value and how to correct it
 
 BUG FIXES:
 
