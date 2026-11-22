@@ -39,6 +39,7 @@ IMPROVEMENTS:
 * directory: `googleworkspace_user` shows a warning that suggests `password_wo` when the configuration sets `password`. The warning shows only with Terraform 1.11 or later, which supports write-only arguments. It also shows when `password` gets its value from a variable, even if that value can be null
 * directory: `googleworkspace_user` now checks `primary_email` at plan time. A value without text before and after its last `@`, or a value with whitespace, fails validation. The check is loose and accepts valid addresses, such as plus addressing and subdomains. The API still does the full check. `on_delete_data_transfer.new_data_owner_email` is not checked, because it also accepts a unique user ID
 * directory: `googleworkspace_user` now reports a missing password at plan time on create, not at apply time. A new user needs `password` or `password_wo`. An imported user can omit both
+* directory: added `default_sender`, `favorite_replies_on_top`, `who_can_approve_members` and `who_can_ban_users` to `googleworkspace_group_settings` and its data source ([#489](https://github.com/hashicorp/terraform-provider-googleworkspace/issues/489))
 
 BUG FIXES:
 

@@ -41,8 +41,12 @@ output "who_can_join_sales" {
 - `custom_reply_to` (String) An email address used when replying to a message if the `reply_to` property is set to `REPLY_TO_CUSTOM`. This address is defined by an account administrator. When the group's `reply_to` property is set to `REPLY_TO_CUSTOM`, the `custom_reply_to` property holds a custom email address used when replying to a message, the `custom_reply_to` property must have a text value or an error is returned.
 - `custom_roles_enabled_for_settings_to_be_merged` (Boolean) Specifies whether the group has a custom role that's included in one of the settings being merged.
 - `default_message_deny_notification_text` (String) When a message is rejected, this is text for the rejection notification sent to the message's author. By default, this property is empty and has no value in the API's response body. The maximum notification text size is 10,000 characters. Requires `send_message_deny_notification` property to be true.
+- `default_sender` (String) Default sender for members who can post messages as the group. Possible values are: 
+	- `DEFAULT_SELF`: By default messages will be sent from the user. 
+	- `GROUP`: By default messages will be sent from the group. This likely requires `members_can_post_as_the_group = true` (unverified).
 - `description` (String) Description of the group. The maximum group description is no more than 300 characters.
 - `enable_collaborative_inbox` (Boolean) Specifies whether a collaborative inbox will remain turned on for the group.
+- `favorite_replies_on_top` (Boolean) Indicates if favorite replies should be displayed above other replies.
 - `id` (String) The ID of this resource.
 - `include_custom_footer` (Boolean) Whether to include custom footer.
 - `include_in_global_address_list` (Boolean) Enables the group to be included in the Global Address List. If true, the group is included in the Global Address List. If false, it is not included in the Global Address List.
@@ -69,10 +73,20 @@ output "who_can_join_sales" {
 	- `MODERATE`: Send the message to the moderation queue. This is the default. 
 	- `SILENTLY_MODERATE`: Send the message to the moderation queue, but do not send notification to moderators. 
 	- `REJECT`: Immediately reject the message.
+- `who_can_approve_members` (String) Specifies who can approve members who ask to join groups. The Groups Settings API documents that this permission will be deprecated once it is merged into `who_can_moderate_members`. Google is merging this setting into `who_can_moderate_members`, so the server may derive its value from that field (unverified). Possible values are: 
+	- `ALL_MEMBERS_CAN_APPROVE`
+	- `ALL_MANAGERS_CAN_APPROVE`
+	- `ALL_OWNERS_CAN_APPROVE`
+	- `NONE_CAN_APPROVE`
 - `who_can_assist_content` (String) Specifies who can moderate metadata. Possible values are: 
 	- `ALL_MEMBERS`
 	- `OWNERS_AND_MANAGERS`
 	- `MANAGERS_ONLY`
+	- `OWNERS_ONLY`
+	- `NONE`
+- `who_can_ban_users` (String) Specifies who can deny membership to users. The Groups Settings API documents that this permission will be deprecated once it is merged into `who_can_moderate_members`. Google is merging this setting into `who_can_moderate_members`, so the server may derive its value from that field (unverified). Possible values are: 
+	- `ALL_MEMBERS`
+	- `OWNERS_AND_MANAGERS`
 	- `OWNERS_ONLY`
 	- `NONE`
 - `who_can_contact_owner` (String) Permission to contact owner of the group via web UI. Possible values are: 

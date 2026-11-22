@@ -127,6 +127,12 @@ func TestAccResourceGroupSettings_full(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config: testAccResourceGroupSettings_full(testGroupVals),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "default_sender", "GROUP"),
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "favorite_replies_on_top", "true"),
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "who_can_approve_members", "ALL_OWNERS_CAN_APPROVE"),
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "who_can_ban_users", "OWNERS_ONLY"),
+				),
 			},
 			{
 				ResourceName:      "googleworkspace_group_settings.my-group-settings",
@@ -135,6 +141,12 @@ func TestAccResourceGroupSettings_full(t *testing.T) {
 			},
 			{
 				Config: testAccResourceGroupSettings_fullUpdate(testGroupVals),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "default_sender", "DEFAULT_SELF"),
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "favorite_replies_on_top", "false"),
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "who_can_approve_members", "ALL_MANAGERS_CAN_APPROVE"),
+					resource.TestCheckResourceAttr("googleworkspace_group_settings.my-group-settings", "who_can_ban_users", "OWNERS_AND_MANAGERS"),
+				),
 			},
 			{
 				ResourceName:      "googleworkspace_group.my-group",
@@ -272,6 +284,10 @@ resource "googleworkspace_group_settings" "my-group-settings" {
   who_can_moderate_content = "NONE"
   who_can_assist_content = "OWNERS_ONLY"
   who_can_discover_group = "ALL_MEMBERS_CAN_DISCOVER"
+  default_sender = "GROUP"
+  favorite_replies_on_top = true
+  who_can_approve_members = "ALL_OWNERS_CAN_APPROVE"
+  who_can_ban_users = "OWNERS_ONLY"
 
   timeouts {
     create = "10m"
@@ -313,6 +329,10 @@ resource "googleworkspace_group_settings" "my-group-settings" {
   who_can_moderate_content = "ALL_MEMBERS"
   who_can_assist_content = "OWNERS_AND_MANAGERS"
   who_can_discover_group = "ANYONE_CAN_DISCOVER"
+  default_sender = "DEFAULT_SELF"
+  favorite_replies_on_top = false
+  who_can_approve_members = "ALL_MANAGERS_CAN_APPROVE"
+  who_can_ban_users = "OWNERS_AND_MANAGERS"
 
   timeouts {
     create = "10m"
@@ -389,4 +409,26 @@ resource "googleworkspace_group_settings" "my-group-settings" {
   who_can_view_membership = "ALL_OWNERS_CAN_VIEW"
 }
 `, testGroupVals)
+}
+
+func TestParseOptionalBool(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    bool
+		wantErr bool
+	}{
+		{"true", true, false},
+		{"false", false, false},
+		{"", false, false},
+		{"maybe", false, true},
+	}
+	for _, c := range cases {
+		got, err := parseOptionalBool(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("parseOptionalBool(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
+		}
+		if got != c.want {
+			t.Errorf("parseOptionalBool(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
 }

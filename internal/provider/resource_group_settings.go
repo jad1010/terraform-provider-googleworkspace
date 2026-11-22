@@ -347,6 +347,53 @@ func resourceGroupSettings() *schema.Resource {
 				ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"ANYONE_CAN_DISCOVER",
 					"ALL_IN_DOMAIN_CAN_DISCOVER", "ALL_MEMBERS_CAN_DISCOVER"}, true)),
 			},
+			"default_sender": {
+				Description: "Default sender for members who can post messages as the group. Possible values are: " +
+					"\n\t- `DEFAULT_SELF`: By default messages will be sent from the user. " +
+					"\n\t- `GROUP`: By default messages will be sent from the group. This likely requires " +
+					"`members_can_post_as_the_group = true` (unverified).",
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"DEFAULT_SELF",
+					"GROUP"}, false)),
+			},
+			"favorite_replies_on_top": {
+				Description: "Indicates if favorite replies should be displayed above other replies.",
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Computed:    true,
+			},
+			"who_can_approve_members": {
+				Description: "Specifies who can approve members who ask to join groups. The Groups Settings API " +
+					"documents that this permission will be deprecated once it is merged into " +
+					"`who_can_moderate_members`. Google is merging this setting into `who_can_moderate_members`, so " +
+					"the server may derive its value from that field (unverified). Possible values are: " +
+					"\n\t- `ALL_MEMBERS_CAN_APPROVE`" +
+					"\n\t- `ALL_MANAGERS_CAN_APPROVE`" +
+					"\n\t- `ALL_OWNERS_CAN_APPROVE`" +
+					"\n\t- `NONE_CAN_APPROVE`",
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"ALL_MEMBERS_CAN_APPROVE",
+					"ALL_MANAGERS_CAN_APPROVE", "ALL_OWNERS_CAN_APPROVE", "NONE_CAN_APPROVE"}, false)),
+			},
+			"who_can_ban_users": {
+				Description: "Specifies who can deny membership to users. The Groups Settings API documents that " +
+					"this permission will be deprecated once it is merged into `who_can_moderate_members`. " +
+					"Google is merging this setting into `who_can_moderate_members`, so the server may derive " +
+					"its value from that field (unverified). Possible values are: " +
+					"\n\t- `ALL_MEMBERS`" +
+					"\n\t- `OWNERS_AND_MANAGERS`" +
+					"\n\t- `OWNERS_ONLY`" +
+					"\n\t- `NONE`",
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"ALL_MEMBERS",
+					"OWNERS_AND_MANAGERS", "OWNERS_ONLY", "NONE"}, false)),
+			},
 			// Adding a computed id simply to override the `optional` id that gets added in the SDK
 			// that will then display improperly in the docs
 			"id": {
@@ -358,27 +405,9 @@ func resourceGroupSettings() *schema.Resource {
 	}
 }
 
-func resourceGroupSettingsCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	var diags diag.Diagnostics
-
-	// use the meta value to retrieve your client from the provider configure method
-	client := meta.(*apiClient)
-
-	email := d.Get("email").(string)
-	log.Printf("[DEBUG] Creating Group Settings %q: %#v", email, email)
-
-	groupsSettingsService, diags := client.NewGroupsSettingsService()
-	if diags.HasError() {
-		return diags
-	}
-
-	groupsService, diags := GetGroupsSettingsService(groupsSettingsService)
-	if diags.HasError() {
-		return diags
-	}
-
+func buildGroupSettingsCreate(d *schema.ResourceData) groupssettings.Groups {
 	groupSettingsObj := groupssettings.Groups{
-		Email:                                   email,
+		Email:                                   d.Get("email").(string),
 		Name:                                    d.Get("name").(string),
 		Description:                             d.Get("description").(string),
 		WhoCanJoin:                              d.Get("who_can_join").(string),
@@ -408,11 +437,190 @@ func resourceGroupSettingsCreate(ctx context.Context, d *schema.ResourceData, me
 		CustomRolesEnabledForSettingsToBeMerged: strconv.FormatBool(d.Get("custom_roles_enabled_for_settings_to_be_merged").(bool)),
 		EnableCollaborativeInbox:                strconv.FormatBool(d.Get("enable_collaborative_inbox").(bool)),
 		WhoCanDiscoverGroup:                     d.Get("who_can_discover_group").(string),
+		DefaultSender:                           d.Get("default_sender").(string),
+		WhoCanApproveMembers:                    d.Get("who_can_approve_members").(string),
+		WhoCanBanUsers:                          d.Get("who_can_ban_users").(string),
 
 		ForceSendFields: []string{"AllowExternalMembers", "AllowWebPosting", "IsArchived", "ArchiveOnly",
 			"IncludeCustomFooter", "SendMessageDenyNotification", "MembersCanPostAsTheGroup", "IncludeInGlobalAddressList",
 			"CustomRolesEnabledForSettingsToBeMerged", "EnableCollaborativeInbox"},
 	}
+
+	// favorite_replies_on_top is Optional + Computed, so only send it when it is set in the configuration;
+	// otherwise the API default is kept. default_sender, who_can_approve_members and who_can_ban_users
+	// are Optional + Computed strings and also keep the API default when unset: an empty string is
+	// dropped by omitempty, so they are not sent. Never add them to ForceSendFields on Create, because
+	// that would send an empty string and the API would reject it.
+	if !d.GetRawConfig().GetAttr("favorite_replies_on_top").IsNull() {
+		groupSettingsObj.FavoriteRepliesOnTop = strconv.FormatBool(d.Get("favorite_replies_on_top").(bool))
+		groupSettingsObj.ForceSendFields = append(groupSettingsObj.ForceSendFields, "FavoriteRepliesOnTop")
+	}
+
+	return groupSettingsObj
+}
+
+func buildGroupSettingsUpdate(d *schema.ResourceData) groupssettings.Groups {
+	groupSettingsObj := groupssettings.Groups{}
+
+	forceSendFields := []string{}
+
+	if d.HasChange("who_can_join") {
+		groupSettingsObj.WhoCanJoin = d.Get("who_can_join").(string)
+	}
+
+	if d.HasChange("who_can_view_membership") {
+		groupSettingsObj.WhoCanViewMembership = d.Get("who_can_view_membership").(string)
+	}
+
+	if d.HasChange("who_can_view_group") {
+		groupSettingsObj.WhoCanViewGroup = d.Get("who_can_view_group").(string)
+	}
+
+	if d.HasChange("allow_external_members") {
+		groupSettingsObj.AllowExternalMembers = strconv.FormatBool(d.Get("allow_external_members").(bool))
+		forceSendFields = append(forceSendFields, "AllowExternalMembers")
+	}
+
+	if d.HasChange("who_can_post_message") {
+		groupSettingsObj.WhoCanPostMessage = d.Get("who_can_post_message").(string)
+	}
+
+	if d.HasChange("allow_web_posting") {
+		groupSettingsObj.AllowWebPosting = strconv.FormatBool(d.Get("allow_web_posting").(bool))
+		forceSendFields = append(forceSendFields, "AllowWebPosting")
+	}
+
+	if d.HasChange("primary_language") {
+		groupSettingsObj.PrimaryLanguage = d.Get("primary_language").(string)
+	}
+
+	if d.HasChange("is_archived") {
+		groupSettingsObj.IsArchived = strconv.FormatBool(d.Get("is_archived").(bool))
+		forceSendFields = append(forceSendFields, "IsArchived")
+	}
+
+	if d.HasChange("archive_only") {
+		groupSettingsObj.ArchiveOnly = strconv.FormatBool(d.Get("archive_only").(bool))
+		forceSendFields = append(forceSendFields, "ArchiveOnly")
+	}
+
+	if d.HasChange("message_moderation_level") {
+		groupSettingsObj.MessageModerationLevel = d.Get("message_moderation_level").(string)
+	}
+
+	if d.HasChange("spam_moderation_level") {
+		groupSettingsObj.SpamModerationLevel = d.Get("spam_moderation_level").(string)
+	}
+
+	if d.HasChange("reply_to") {
+		groupSettingsObj.ReplyTo = d.Get("reply_to").(string)
+	}
+
+	if d.HasChange("custom_reply_to") {
+		groupSettingsObj.CustomReplyTo = d.Get("custom_reply_to").(string)
+	}
+
+	if d.HasChange("include_custom_footer") {
+		groupSettingsObj.IncludeCustomFooter = strconv.FormatBool(d.Get("include_custom_footer").(bool))
+		forceSendFields = append(forceSendFields, "IncludeCustomFooter")
+	}
+
+	if d.HasChange("custom_footer_text") {
+		groupSettingsObj.CustomFooterText = d.Get("custom_footer_text").(string)
+	}
+
+	if d.HasChange("send_message_deny_notification") {
+		groupSettingsObj.SendMessageDenyNotification = strconv.FormatBool(d.Get("send_message_deny_notification").(bool))
+		forceSendFields = append(forceSendFields, "SendMessageDenyNotification")
+	}
+
+	if d.HasChange("default_message_deny_notification_text") {
+		groupSettingsObj.DefaultMessageDenyNotificationText = d.Get("default_message_deny_notification_text").(string)
+	}
+
+	if d.HasChange("members_can_post_as_the_group") {
+		groupSettingsObj.MembersCanPostAsTheGroup = strconv.FormatBool(d.Get("members_can_post_as_the_group").(bool))
+		forceSendFields = append(forceSendFields, "MembersCanPostAsTheGroup")
+	}
+
+	if d.HasChange("include_in_global_address_list") {
+		groupSettingsObj.IncludeInGlobalAddressList = strconv.FormatBool(d.Get("include_in_global_address_list").(bool))
+		forceSendFields = append(forceSendFields, "IncludeInGlobalAddressList")
+	}
+
+	if d.HasChange("who_can_leave_group") {
+		groupSettingsObj.WhoCanLeaveGroup = d.Get("who_can_leave_group").(string)
+	}
+
+	if d.HasChange("who_can_contact_owner") {
+		groupSettingsObj.WhoCanContactOwner = d.Get("who_can_contact_owner").(string)
+	}
+
+	if d.HasChange("who_can_moderate_members") {
+		groupSettingsObj.WhoCanModerateMembers = d.Get("who_can_moderate_members").(string)
+	}
+
+	if d.HasChange("who_can_moderate_content") {
+		groupSettingsObj.WhoCanModerateContent = d.Get("who_can_moderate_content").(string)
+	}
+
+	if d.HasChange("who_can_assist_content") {
+		groupSettingsObj.WhoCanAssistContent = d.Get("who_can_assist_content").(string)
+	}
+
+	if d.HasChange("enable_collaborative_inbox") {
+		groupSettingsObj.EnableCollaborativeInbox = strconv.FormatBool(d.Get("enable_collaborative_inbox").(bool))
+		forceSendFields = append(forceSendFields, "EnableCollaborativeInbox")
+	}
+
+	if d.HasChange("who_can_discover_group") {
+		groupSettingsObj.WhoCanDiscoverGroup = d.Get("who_can_discover_group").(string)
+	}
+
+	if d.HasChange("default_sender") {
+		groupSettingsObj.DefaultSender = d.Get("default_sender").(string)
+	}
+
+	if d.HasChange("favorite_replies_on_top") {
+		groupSettingsObj.FavoriteRepliesOnTop = strconv.FormatBool(d.Get("favorite_replies_on_top").(bool))
+		forceSendFields = append(forceSendFields, "FavoriteRepliesOnTop")
+	}
+
+	if d.HasChange("who_can_approve_members") {
+		groupSettingsObj.WhoCanApproveMembers = d.Get("who_can_approve_members").(string)
+	}
+
+	if d.HasChange("who_can_ban_users") {
+		groupSettingsObj.WhoCanBanUsers = d.Get("who_can_ban_users").(string)
+	}
+
+	if len(forceSendFields) > 0 {
+		groupSettingsObj.ForceSendFields = forceSendFields
+	}
+
+	return groupSettingsObj
+}
+
+func resourceGroupSettingsCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// use the meta value to retrieve your client from the provider configure method
+	client := meta.(*apiClient)
+
+	email := d.Get("email").(string)
+	log.Printf("[DEBUG] Creating Group Settings %q: %#v", email, email)
+
+	groupsSettingsService, diags := client.NewGroupsSettingsService()
+	if diags.HasError() {
+		return diags
+	}
+
+	groupsService, diags := GetGroupsSettingsService(groupsSettingsService)
+	if diags.HasError() {
+		return diags
+	}
+
+	groupSettingsObj := buildGroupSettingsCreate(d)
 
 	groupSettings, err := groupsService.Update(email, &groupSettingsObj).Do()
 	if err != nil {
@@ -531,6 +739,11 @@ func resourceGroupSettingsRead(ctx context.Context, d *schema.ResourceData, meta
 		return diag.FromErr(err)
 	}
 
+	favoriteRepliesOnTop, err := parseOptionalBool(group.FavoriteRepliesOnTop)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	d.Set("email", group.Email)
 	d.Set("name", group.Name)
 	d.Set("description", group.Description)
@@ -561,6 +774,10 @@ func resourceGroupSettingsRead(ctx context.Context, d *schema.ResourceData, meta
 	d.Set("custom_roles_enabled_for_settings_to_be_merged", customRolesEnabledForSettingsToBeMerged)
 	d.Set("enable_collaborative_inbox", enableCollaborativeInbox)
 	d.Set("who_can_discover_group", group.WhoCanDiscoverGroup)
+	d.Set("default_sender", group.DefaultSender)
+	d.Set("favorite_replies_on_top", favoriteRepliesOnTop)
+	d.Set("who_can_approve_members", group.WhoCanApproveMembers)
+	d.Set("who_can_ban_users", group.WhoCanBanUsers)
 
 	d.SetId(group.Email)
 
@@ -586,126 +803,7 @@ func resourceGroupSettingsUpdate(ctx context.Context, d *schema.ResourceData, me
 		return diags
 	}
 
-	groupSettingsObj := groupssettings.Groups{}
-
-	forceSendFields := []string{}
-
-	if d.HasChange("who_can_join") {
-		groupSettingsObj.WhoCanJoin = d.Get("who_can_join").(string)
-	}
-
-	if d.HasChange("who_can_view_membership") {
-		groupSettingsObj.WhoCanViewMembership = d.Get("who_can_view_membership").(string)
-	}
-
-	if d.HasChange("who_can_view_group") {
-		groupSettingsObj.WhoCanViewGroup = d.Get("who_can_view_group").(string)
-	}
-
-	if d.HasChange("allow_external_members") {
-		groupSettingsObj.AllowExternalMembers = strconv.FormatBool(d.Get("allow_external_members").(bool))
-		forceSendFields = append(forceSendFields, "AllowExternalMembers")
-	}
-
-	if d.HasChange("who_can_post_message") {
-		groupSettingsObj.WhoCanPostMessage = d.Get("who_can_post_message").(string)
-	}
-
-	if d.HasChange("allow_web_posting") {
-		groupSettingsObj.AllowWebPosting = strconv.FormatBool(d.Get("allow_web_posting").(bool))
-		forceSendFields = append(forceSendFields, "AllowWebPosting")
-	}
-
-	if d.HasChange("primary_language") {
-		groupSettingsObj.PrimaryLanguage = d.Get("primary_language").(string)
-	}
-
-	if d.HasChange("is_archived") {
-		groupSettingsObj.IsArchived = strconv.FormatBool(d.Get("is_archived").(bool))
-		forceSendFields = append(forceSendFields, "IsArchived")
-	}
-
-	if d.HasChange("archive_only") {
-		groupSettingsObj.ArchiveOnly = strconv.FormatBool(d.Get("archive_only").(bool))
-		forceSendFields = append(forceSendFields, "ArchiveOnly")
-	}
-
-	if d.HasChange("message_moderation_level") {
-		groupSettingsObj.MessageModerationLevel = d.Get("message_moderation_level").(string)
-	}
-
-	if d.HasChange("spam_moderation_level") {
-		groupSettingsObj.SpamModerationLevel = d.Get("spam_moderation_level").(string)
-	}
-
-	if d.HasChange("reply_to") {
-		groupSettingsObj.ReplyTo = d.Get("reply_to").(string)
-	}
-
-	if d.HasChange("custom_reply_to") {
-		groupSettingsObj.CustomReplyTo = d.Get("custom_reply_to").(string)
-	}
-
-	if d.HasChange("include_custom_footer") {
-		groupSettingsObj.IncludeCustomFooter = strconv.FormatBool(d.Get("include_custom_footer").(bool))
-		forceSendFields = append(forceSendFields, "IncludeCustomFooter")
-	}
-
-	if d.HasChange("custom_footer_text") {
-		groupSettingsObj.CustomFooterText = d.Get("custom_footer_text").(string)
-	}
-
-	if d.HasChange("send_message_deny_notification") {
-		groupSettingsObj.SendMessageDenyNotification = strconv.FormatBool(d.Get("send_message_deny_notification").(bool))
-		forceSendFields = append(forceSendFields, "SendMessageDenyNotification")
-	}
-
-	if d.HasChange("default_message_deny_notification_text") {
-		groupSettingsObj.DefaultMessageDenyNotificationText = d.Get("default_message_deny_notification_text").(string)
-	}
-
-	if d.HasChange("members_can_post_as_the_group") {
-		groupSettingsObj.MembersCanPostAsTheGroup = strconv.FormatBool(d.Get("members_can_post_as_the_group").(bool))
-		forceSendFields = append(forceSendFields, "MembersCanPostAsTheGroup")
-	}
-
-	if d.HasChange("include_in_global_address_list") {
-		groupSettingsObj.IncludeInGlobalAddressList = strconv.FormatBool(d.Get("include_in_global_address_list").(bool))
-		forceSendFields = append(forceSendFields, "IncludeInGlobalAddressList")
-	}
-
-	if d.HasChange("who_can_leave_group") {
-		groupSettingsObj.WhoCanLeaveGroup = d.Get("who_can_leave_group").(string)
-	}
-
-	if d.HasChange("who_can_contact_owner") {
-		groupSettingsObj.WhoCanContactOwner = d.Get("who_can_contact_owner").(string)
-	}
-
-	if d.HasChange("who_can_moderate_members") {
-		groupSettingsObj.WhoCanModerateMembers = d.Get("who_can_moderate_members").(string)
-	}
-
-	if d.HasChange("who_can_moderate_content") {
-		groupSettingsObj.WhoCanModerateContent = d.Get("who_can_moderate_content").(string)
-	}
-
-	if d.HasChange("who_can_assist_content") {
-		groupSettingsObj.WhoCanAssistContent = d.Get("who_can_assist_content").(string)
-	}
-
-	if d.HasChange("enable_collaborative_inbox") {
-		groupSettingsObj.EnableCollaborativeInbox = strconv.FormatBool(d.Get("enable_collaborative_inbox").(bool))
-		forceSendFields = append(forceSendFields, "EnableCollaborativeInbox")
-	}
-
-	if d.HasChange("who_can_discover_group") {
-		groupSettingsObj.WhoCanDiscoverGroup = d.Get("who_can_discover_group").(string)
-	}
-
-	if len(forceSendFields) > 0 {
-		groupSettingsObj.ForceSendFields = forceSendFields
-	}
+	groupSettingsObj := buildGroupSettingsUpdate(d)
 
 	// a group rename only changes email; an empty settings update is rejected with 400: Required.
 	// wait for the rename to propagate to the groupssettings API, then read as usual
@@ -767,6 +865,15 @@ func resourceGroupSettingsUpdate(ctx context.Context, d *schema.ResourceData, me
 	log.Printf("[DEBUG] Finished updating Group Settings %q: %#v", d.Id(), email)
 
 	return resourceGroupSettingsRead(ctx, d, meta)
+}
+
+// parseOptionalBool parses a "true"/"false" string from the API. An empty string, which the API returns
+// when it does not report the setting, is read as false.
+func parseOptionalBool(v string) (bool, error) {
+	if v == "" {
+		return false, nil
+	}
+	return strconv.ParseBool(v)
 }
 
 func resourceGroupSettingsDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
