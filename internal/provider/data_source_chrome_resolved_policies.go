@@ -236,7 +236,7 @@ func dataSourceChromeResolvedPoliciesRead(ctx context.Context, d *schema.Resourc
 			"value":                  string(value),
 			"schema_values":          schemaValues,
 			"source_org_unit_id":     sourceOrgUnitId,
-			"inherited":              !setOnOrgUnit(resolved, orgUnitId),
+			"inherited":              !chromePolicyTarget{id: orgUnitId}.setOn(resolved),
 			"additional_target_keys": keys,
 		})
 	}

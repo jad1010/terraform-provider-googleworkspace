@@ -3,14 +3,14 @@
 page_title: "googleworkspace_chrome_policy Resource - terraform-provider-googleworkspace"
 subcategory: ""
 description: |-
-  Chrome Policy resource in the Terraform Googleworkspace provider. Currently only supports policies not requiring additionalTargetKeys. Chrome Policy Schema resides under the https://www.googleapis.com/auth/chrome.management.policy client scope.
+  Chrome Policy resource in the Terraform Googleworkspace provider. Chrome Policy Schema resides under the https://www.googleapis.com/auth/chrome.management.policy client scope.
   Create and update wait until the written values are visible in the API, up to the create and update timeouts (5 minutes by default). The write can be sent again: at half of that time if the values are not visible, and when a new value that differs from the configuration is seen, to confirm it. A value from another writer is overwritten only if that write succeeds and the API applies it. The apply can show these warnings:
   "Chrome Policy values are not visible yet": the values were not visible at the timeout. The state keeps the configured values, and the next plan shows a change if the values are still not set."Chrome Policy values did not change": a policy still has the value from before the write, also after the write was sent again. Nothing is recorded, and the next plan shows a change."Chrome Policy values differ from the configuration": the API stores another form of the configured values (for example, a normalized value). The provider records that form in applied_values, and the plan shows no change while the API values and the configured values stay the same.
 ---
 
 # googleworkspace_chrome_policy (Resource)
 
-Chrome Policy resource in the Terraform Googleworkspace provider. Currently only supports policies not requiring additionalTargetKeys. Chrome Policy Schema resides under the `https://www.googleapis.com/auth/chrome.management.policy` client scope.
+Chrome Policy resource in the Terraform Googleworkspace provider. Chrome Policy Schema resides under the `https://www.googleapis.com/auth/chrome.management.policy` client scope.
 
 Create and update wait until the written values are visible in the API, up to the `create` and `update` timeouts (5 minutes by default). The write can be sent again: at half of that time if the values are not visible, and when a new value that differs from the configuration is seen, to confirm it. A value from another writer is overwritten only if that write succeeds and the API applies it. The apply can show these warnings:
 
@@ -30,11 +30,38 @@ resource "googleworkspace_org_unit" "example" {
 }
 
 resource "googleworkspace_chrome_policy" "example" {
-  org_unit_id = googleworkspace_org_unit.test.id
+  org_unit_id = googleworkspace_org_unit.example.id
   policies {
     schema_name = "chrome.users.MaxConnectionsPerProxy"
     schema_values = {
       maxConnectionsPerProxy = jsonencode(34)
+    }
+  }
+}
+
+# App policies (chrome.users.apps.*) need the app in additional_target_keys.
+# Use one resource for each app, for example to allow only reviewed extensions.
+locals {
+  extension_install_types = {
+    # Google Docs Offline
+    "chrome:ghbmnnjooekpmoecnnnilnnbdlolhkhi" = "FORCED"
+  }
+}
+
+resource "googleworkspace_chrome_policy" "extensions" {
+  for_each = local.extension_install_types
+
+  org_unit_id = googleworkspace_org_unit.example.id
+
+  additional_target_keys {
+    target_key   = "app_id"
+    target_value = each.key
+  }
+
+  policies {
+    schema_name = "chrome.users.apps.InstallType"
+    schema_values = {
+      appInstallType = jsonencode(each.value)
     }
   }
 }
@@ -50,6 +77,7 @@ resource "googleworkspace_chrome_policy" "example" {
 
 ### Optional
 
+- `additional_target_keys` (Block Set) Additional target keys that identify the target of all policies in this resource, for example `app_id` for the policies of an app (`chrome.users.apps.*`). Each `target_key` can occur only once. To set the policies of more than one app, use one resource for each app. Changing this forces a new resource. (see [below for nested schema](#nestedblock--additional_target_keys))
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
@@ -64,6 +92,15 @@ Required:
 
 - `schema_name` (String) The full qualified name of the policy schema.
 - `schema_values` (Map of String) JSON encoded map that represents key/value pairs that correspond to the given schema.
+
+
+<a id="nestedblock--additional_target_keys"></a>
+### Nested Schema for `additional_target_keys`
+
+Required:
+
+- `target_key` (String) The name of the target key, for example `app_id`.
+- `target_value` (String) The value of the target key, for example `chrome:ghbmnnjooekpmoecnnnilnnbdlolhkhi`.
 
 
 <a id="nestedblock--timeouts"></a>

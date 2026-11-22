@@ -37,6 +37,33 @@ func TestAccResourceChromePolicy_basic(t *testing.T) {
 	})
 }
 
+func TestAccResourceChromePolicy_appScoped(t *testing.T) {
+	t.Parallel()
+
+	ouName := fmt.Sprintf("tf-test-%s", acctest.RandString(10))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: providerFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceChromePolicy_appScoped(ouName, "FORCED"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("googleworkspace_chrome_policy.test", "additional_target_keys.0.target_key", "app_id"),
+					resource.TestCheckResourceAttr("googleworkspace_chrome_policy.test", "additional_target_keys.0.target_value", testAccChromePolicyAppId),
+					resource.TestCheckResourceAttr("googleworkspace_chrome_policy.test", "policies.0.schema_values.appInstallType", "\"FORCED\""),
+				),
+			},
+			{
+				Config: testAccResourceChromePolicy_appScoped(ouName, "BLOCKED"),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("googleworkspace_chrome_policy.test", "policies.0.schema_values.appInstallType", "\"BLOCKED\""),
+				),
+			},
+		},
+	})
+}
+
 func TestAccResourceChromePolicy_typeMessage(t *testing.T) {
 	t.Parallel()
 
@@ -292,4 +319,30 @@ resource "googleworkspace_chrome_policy" "test" {
   }
 }
 `, ouName)
+}
+
+// testAccChromePolicyAppId is the app of the acceptance tests for app policies: the Google Docs Offline extension.
+const testAccChromePolicyAppId = "chrome:ghbmnnjooekpmoecnnnilnnbdlolhkhi"
+
+func testAccResourceChromePolicy_appScoped(ouName, installType string) string {
+	return fmt.Sprintf(`
+resource "googleworkspace_org_unit" "test" {
+  name = "%s"
+  parent_org_unit_path = "/"
+}
+
+resource "googleworkspace_chrome_policy" "test" {
+  org_unit_id = googleworkspace_org_unit.test.id
+  additional_target_keys {
+    target_key   = "app_id"
+    target_value = "%s"
+  }
+  policies {
+    schema_name = "chrome.users.apps.InstallType"
+    schema_values = {
+      appInstallType = jsonencode("%s")
+    }
+  }
+}
+`, ouName, testAccChromePolicyAppId, installType)
 }

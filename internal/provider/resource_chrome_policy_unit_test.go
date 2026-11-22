@@ -4,8 +4,10 @@
 package googleworkspace
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,28 +27,46 @@ import (
 )
 
 const (
-	testChromePolicyCustomer  = "my_customer"
-	testChromePolicyOrgUnit   = "ou1"
-	testChromePolicyConns     = "chrome.users.MaxConnectionsPerProxy"
-	testChromePolicyHomepage  = "chrome.users.HomepageLocation"
-	testChromePolicyUrls      = "chrome.users.UrlBlocking"
-	testChromePolicyBookmarks = "chrome.users.ManagedBookmarksSetting"
-	testChromePolicyShared    = "chrome.users.SharedFieldName"
-	testChromePolicyPolicy    = "chrome.users.Policy"
-	testChromePolicyNeverSeen = -1
-	testChromePolicyNoSource  = "-"
-	testChromePolicyParent    = "orgunits/parent"
+	testChromePolicyCustomer   = "my_customer"
+	testChromePolicyOrgUnit    = "ou1"
+	testChromePolicyConns      = "chrome.users.MaxConnectionsPerProxy"
+	testChromePolicyHomepage   = "chrome.users.HomepageLocation"
+	testChromePolicyUrls       = "chrome.users.UrlBlocking"
+	testChromePolicyBookmarks  = "chrome.users.ManagedBookmarksSetting"
+	testChromePolicyShared     = "chrome.users.SharedFieldName"
+	testChromePolicyPolicy     = "chrome.users.Policy"
+	testChromePolicyNeverSeen  = -1
+	testChromePolicyNoSource   = "-"
+	testChromePolicyParent     = "orgunits/parent"
+	testChromePolicyAppInstall = "chrome.users.apps.InstallType"
+	testChromePolicyOrgOnly    = "chrome.devices.OrgUnitOnly"
 )
 
-// fakeChromePolicyAPI is a minimal Chrome Policy API for one org unit.
+// fakeChromePolicyAPI is a minimal Chrome Policy API for org units and groups.
+// The values are stored by target and entry (see stateKey). An entry is the schema name, and for a target with
+// additional target keys, the keys (see testChromePolicyEntry). A value on the default target (target, the org unit
+// testChromePolicyOrgUnit unless a test sets it) has the entry as its key, so that tests can use the entry directly.
+// Resolve returns the values of the requested target resource. If the request has additional target keys, it returns
+// only the entry with those keys. Else it returns all entries of the schema, each with its own target key, as the API
+// does for an app policy when the request has no app. With resolvePageSize, resolve returns pages of that size.
+// resolvedTargetResource, if set, replaces the target resource in the target key of each resolved policy.
+// With resolveIgnoresKeys, resolve returns all entries of the schema also for a request with additional target keys.
 // A batchModify write becomes visible to resolve only after hiddenResolves resolve calls for that schema.
 // With hiddenResolves set to testChromePolicyNeverSeen, a write never becomes visible.
 // The first dropWrites batchModify calls return success but do not change a value.
 // The batchModify calls with the numbers in failModifyCalls (from 1) fail, and the first call waits firstModifyDelay.
+// modifyCanceled counts the first calls that the client canceled during that wait.
 // If transform is set, it changes a value when the value becomes visible, as an API that normalizes values.
-// sources has the source of a visible value by schema name: a target resource, or testChromePolicyNoSource for no
-// source key. Without an entry, the source is the org unit. A write that becomes visible has the org unit as source,
+// sources has the source of a visible value by entry: a target resource, or testChromePolicyNoSource for no
+// source key. Without an entry, the source is the target. A write that becomes visible has the target as source,
 // or writeSource if it is set. A schema GET waits schemaDelay.
+// requests has the method and the target of each write request, for example
+// "groups:batchModify groups/g1 app_id=chrome:a". orderings has the group priority orderings by
+// testChromePolicyOrderingKey. An ordering request needs a policy target key, and an update must list exactly the
+// groups that have a visible value for the policy and the additional target keys (see orderingGroups).
+// If fail is set, it is called for each POST request with the method (for example "policies:resolve" or
+// "policies/groups:batchDelete"). If it returns a code that is not 0, the request fails with that code and message.
+// With deleteUnsetFails, a groups:batchDelete request with a policy that is not set fails, and deletes nothing.
 // A write sets only the fields in its update mask, as the API does, and modifyRequests has each write request.
 // After a batchInherit, the next write of that schema starts from no value, also if a test sets a visible value again
 // to simulate a stale read.
@@ -54,6 +74,7 @@ type fakeChromePolicyAPI struct {
 	t *testing.T
 
 	mu              sync.Mutex
+	target          string
 	visible         map[string]map[string]interface{}
 	pending         map[string]map[string]interface{}
 	pendingHidden   map[string]int
@@ -72,22 +93,82 @@ type fakeChromePolicyAPI struct {
 	writeSource     string
 	schemaDelay     time.Duration
 	schemaCanceled  int32
+	modifyCanceled  int32
 	schemaGets      map[string]int
+	requests        []string
+	orderings       map[string][]string
+	orderingUpdates int
 
 	firstModifyDelay time.Duration
 	modifyDelayed    int32
 	// numbersAsNumbers makes resolve return numbers as JSON numbers, not as strings.
 	numbersAsNumbers bool
+
+	resolvePageSize        int
+	resolvedTargetResource string
+	resolveIgnoresKeys     bool
+	fail                   func(method string) (int, string)
+	deleteUnsetFails       bool
 }
 
 func newFakeChromePolicyAPI(t *testing.T) *fakeChromePolicyAPI {
 	return &fakeChromePolicyAPI{
 		t:             t,
+		target:        "orgunits/" + testChromePolicyOrgUnit,
 		visible:       map[string]map[string]interface{}{},
 		pending:       map[string]map[string]interface{}{},
 		pendingHidden: map[string]int{},
 		schemaGets:    map[string]int{},
+		orderings:     map[string][]string{},
 	}
+}
+
+// testChromePolicyEntry returns the entry of the fake API for a schema and additional target keys. Without keys, the
+// entry is the schema name.
+func testChromePolicyEntry(schemaName string, keys map[string]string) string {
+	if len(keys) == 0 {
+		return schemaName
+	}
+	return schemaName + "|" + testChromePolicyKeysString(keys)
+}
+
+// testChromePolicyEntryKeys returns the schema name and the additional target keys of an entry.
+func testChromePolicyEntryKeys(entry string) (string, map[string]string) {
+	parts := strings.SplitN(entry, "|", 2)
+	if len(parts) == 1 {
+		return entry, nil
+	}
+	keys := map[string]string{}
+	for _, pair := range strings.Split(parts[1], ",") {
+		kv := strings.SplitN(pair, "=", 2)
+		keys[kv[0]] = kv[1]
+	}
+	return parts[0], keys
+}
+
+func testChromePolicyKeysString(keys map[string]string) string {
+	var pairs []string
+	for k, v := range keys {
+		pairs = append(pairs, k+"="+v)
+	}
+	sort.Strings(pairs)
+	return strings.Join(pairs, ",")
+}
+
+// testChromePolicyTargetString returns a target key as "<target resource>" or "<target resource> <keys>".
+func testChromePolicyTargetString(key *chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey) string {
+	if key == nil {
+		return "<nil>"
+	}
+	if len(key.AdditionalTargetKeys) == 0 {
+		return key.TargetResource
+	}
+	return key.TargetResource + " " + testChromePolicyKeysString(key.AdditionalTargetKeys)
+}
+
+// testChromePolicyOrderingKey returns the key of a group priority ordering in the fake API.
+func testChromePolicyOrderingKey(schemaName, namespace string, key *chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey) string {
+	return schemaName + ";" + namespace + ";" + testChromePolicyTargetString(key)
 }
 
 func testChromePolicyMessage(name string, fields ...*chromepolicy.Proto2FieldDescriptorProto) *chromepolicy.Proto2DescriptorProto {
@@ -168,6 +249,23 @@ var testChromePolicySchemas = map[string]*chromepolicy.Proto2FileDescriptorProto
 			}},
 		}},
 	},
+	// An app policy, which needs the additional target key app_id.
+	testChromePolicyAppInstall: {
+		Package: "chrome.users.apps",
+		MessageType: []*chromepolicy.Proto2DescriptorProto{
+			testChromePolicyMessage("InstallType",
+				testChromePolicyField("appInstallType", "TYPE_STRING", "LABEL_OPTIONAL", ""),
+				testChromePolicyField("installationUrl", "TYPE_STRING", "LABEL_OPTIONAL", ""),
+			),
+		},
+	},
+	// A policy that cannot be set on a group.
+	testChromePolicyOrgOnly: {
+		Package: "chrome.devices",
+		MessageType: []*chromepolicy.Proto2DescriptorProto{
+			testChromePolicyMessage("OrgUnitOnly", testChromePolicyField("enabled", "TYPE_BOOL", "LABEL_OPTIONAL", "")),
+		},
+	},
 	// Two top-level messages with a field of the same name and different types.
 	testChromePolicyShared: {
 		Package: "chrome.users",
@@ -189,13 +287,33 @@ var testChromePolicySchemas = map[string]*chromepolicy.Proto2FileDescriptorProto
 	},
 }
 
+// testChromePolicySchemaKeyNames and testChromePolicySchemaTargets are the additional target key names and the valid
+// target resources of the policy schemas that the fake API serves. A schema without an entry has none.
+var (
+	testChromePolicySchemaKeyNames = map[string][]*chromepolicy.GoogleChromePolicyVersionsV1AdditionalTargetKeyName{
+		testChromePolicyAppInstall: {{Key: "app_id", KeyDescription: "The app."}},
+	}
+	testChromePolicySchemaTargets = map[string][]string{
+		testChromePolicyAppInstall: {"ORG_UNIT", "GROUP"},
+		testChromePolicyOrgOnly:    {"ORG_UNIT"},
+	}
+)
+
 func (f *fakeChromePolicyAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, ":batchModify") {
+		// The server sees that the client closed the connection only after the request body is read.
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			f.t.Errorf("read request body: %v", err)
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
 		// Only the first write waits. The wait stops if the request is canceled.
 		if atomic.CompareAndSwapInt32(&f.modifyDelayed, 0, 1) {
 			select {
 			case <-time.After(f.firstModifyDelay):
 			case <-r.Context().Done():
+				atomic.AddInt32(&f.modifyCanceled, 1)
 				return
 			}
 		}
@@ -214,6 +332,16 @@ func (f *fakeChromePolicyAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	customerPath := "/v1/customers/" + testChromePolicyCustomer
 
+	if f.fail != nil && r.Method == http.MethodPost {
+		if code, message := f.fail(strings.TrimPrefix(r.URL.Path, customerPath+"/")); code != 0 {
+			body, _ := json.Marshal(map[string]interface{}{"error": map[string]interface{}{"code": code, "message": message}})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			_, _ = w.Write(body)
+			return
+		}
+	}
+
 	switch {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, customerPath+"/policySchemas/"):
 		name := strings.TrimPrefix(r.URL.Path, customerPath+"/policySchemas/")
@@ -224,8 +352,10 @@ func (f *fakeChromePolicyAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		f.schemaGets[name]++
 		f.writeJSON(w, &chromepolicy.GoogleChromePolicyVersionsV1PolicySchema{
-			SchemaName: name,
-			Definition: definition,
+			SchemaName:               name,
+			Definition:               definition,
+			AdditionalTargetKeyNames: testChromePolicySchemaKeyNames[name],
+			ValidTargetResources:     testChromePolicySchemaTargets[name],
 		})
 
 	case r.Method == http.MethodPost && r.URL.Path == customerPath+"/policies:resolve":
@@ -234,52 +364,84 @@ func (f *fakeChromePolicyAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		f.resolveCalls++
 
 		name := req.PolicySchemaFilter
-		if value, ok := f.pending[name]; ok {
-			if f.pendingHidden[name] == 0 {
+		target := req.PolicyTargetKey.TargetResource
+		for _, entry := range f.entries(f.pending, target, name, nil) {
+			value := f.pending[entry]
+			if f.pendingHidden[entry] == 0 {
 				if f.transform != nil {
 					value = f.transform(name, value)
 				}
-				f.visible[name] = value
-				delete(f.sources, name)
+				f.visible[entry] = value
+				delete(f.sources, entry)
 				if f.writeSource != "" {
 					if f.sources == nil {
 						f.sources = map[string]string{}
 					}
-					f.sources[name] = f.writeSource
+					f.sources[entry] = f.writeSource
 				}
-				delete(f.pending, name)
-			} else if f.pendingHidden[name] > 0 {
-				f.pendingHidden[name]--
+				delete(f.pending, entry)
+			} else if f.pendingHidden[entry] > 0 {
+				f.pendingHidden[entry]--
 			}
 		}
 
-		resp := &chromepolicy.GoogleChromePolicyVersionsV1ResolveResponse{}
-		if value, ok := f.visible[name]; ok {
+		filter := req.PolicyTargetKey.AdditionalTargetKeys
+		if f.resolveIgnoresKeys {
+			filter = nil
+		}
+		var resolved []*chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy
+		for _, entry := range f.entries(f.visible, target, name, filter) {
+			_, keys := testChromePolicyEntryKeys(f.splitStateKey(entry))
+			targetKey := &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{
+				TargetResource:       target,
+				AdditionalTargetKeys: keys,
+			}
+			if f.resolvedTargetResource != "" {
+				targetKey.TargetResource = f.resolvedTargetResource
+			}
 			for i := 0; i <= f.extraResolved; i++ {
-				sourceKey := req.PolicyTargetKey
-				switch source := f.sources[name]; source {
+				sourceKey := targetKey
+				switch source := f.sources[entry]; source {
 				case "":
 				case testChromePolicyNoSource:
 					sourceKey = nil
 				default:
-					sourceKey = &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{TargetResource: source}
+					sourceKey = &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{TargetResource: source, AdditionalTargetKeys: keys}
 				}
-				resp.ResolvedPolicies = append(resp.ResolvedPolicies, &chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy{
+				resolved = append(resolved, &chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy{
+					TargetKey: targetKey,
 					SourceKey: sourceKey,
 					Value: &chromepolicy.GoogleChromePolicyVersionsV1PolicyValue{
 						PolicySchema: name,
-						Value:        f.apiValue(value),
+						Value:        f.apiValue(f.visible[entry]),
 					},
 				})
 			}
 		}
+
+		resp := &chromepolicy.GoogleChromePolicyVersionsV1ResolveResponse{ResolvedPolicies: resolved}
+		if f.resolvePageSize > 0 {
+			start, _ := strconv.Atoi(req.PageToken)
+			end := start + f.resolvePageSize
+			if end < len(resolved) {
+				resp.NextPageToken = strconv.Itoa(end)
+			} else {
+				end = len(resolved)
+			}
+			resp.ResolvedPolicies = resolved[start:end]
+		}
 		f.writeJSON(w, resp)
 
-	case r.Method == http.MethodPost && r.URL.Path == customerPath+"/policies/orgunits:batchModify":
+	case r.Method == http.MethodPost && (r.URL.Path == customerPath+"/policies/orgunits:batchModify" || r.URL.Path == customerPath+"/policies/groups:batchModify"):
+		// The request types of org units and groups have the same fields.
 		var req chromepolicy.GoogleChromePolicyVersionsV1BatchModifyOrgUnitPoliciesRequest
 		f.readJSON(r, &req)
 		f.modifyCalls++
 		f.modifyRequests = append(f.modifyRequests, req.Requests...)
+		method := strings.TrimPrefix(r.URL.Path, customerPath+"/policies/")
+		for _, mod := range req.Requests {
+			f.requests = append(f.requests, method+" "+testChromePolicyTargetString(mod.PolicyTargetKey))
+		}
 		if f.failModifyCalls[f.modifyCalls] {
 			http.Error(w, `{"error":{"code":400,"message":"write failed"}}`, http.StatusBadRequest)
 			return
@@ -295,15 +457,15 @@ func (f *fakeChromePolicyAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			if err := unmarshalChromePolicyJSON(mod.PolicyValue.Value, &value); err != nil {
 				f.t.Errorf("batchModify value: %v", err)
 			}
-			name := mod.PolicyValue.PolicySchema
+			entry := f.stateKey(mod.PolicyTargetKey.TargetResource, testChromePolicyEntry(mod.PolicyValue.PolicySchema, mod.PolicyTargetKey.AdditionalTargetKeys))
 
 			// The fields in the mask change the pending value, or else the visible value. A field in the mask that
 			// is not in the value is cleared.
-			current, ok := f.pending[name]
-			if !ok && !f.reset[name] {
-				current = f.visible[name]
+			current, ok := f.pending[entry]
+			if !ok && !f.reset[entry] {
+				current = f.visible[entry]
 			}
-			delete(f.reset, name)
+			delete(f.reset, entry)
 			merged := map[string]interface{}{}
 			for k, v := range current {
 				merged[k] = v
@@ -317,28 +479,94 @@ func (f *fakeChromePolicyAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			}
 
 			// A write again while a write is not visible yet does not restart the delay.
-			if _, ok := f.pending[name]; !ok {
-				f.pendingHidden[name] = f.hiddenResolves
+			if _, ok := f.pending[entry]; !ok {
+				f.pendingHidden[entry] = f.hiddenResolves
 			}
-			f.pending[name] = merged
+			f.pending[entry] = merged
 		}
 		f.writeJSON(w, struct{}{})
 
-	case r.Method == http.MethodPost && r.URL.Path == customerPath+"/policies/orgunits:batchInherit":
+	case r.Method == http.MethodPost && (r.URL.Path == customerPath+"/policies/orgunits:batchInherit" || r.URL.Path == customerPath+"/policies/groups:batchDelete"):
+		// The request types of org units and groups have the same fields.
 		var req chromepolicy.GoogleChromePolicyVersionsV1BatchInheritOrgUnitPoliciesRequest
 		f.readJSON(r, &req)
 		f.inheritCalls++
+		method := strings.TrimPrefix(r.URL.Path, customerPath+"/policies/")
+		if f.deleteUnsetFails && method == "groups:batchDelete" {
+			for _, inherit := range req.Requests {
+				entry := f.stateKey(inherit.PolicyTargetKey.TargetResource, testChromePolicyEntry(inherit.PolicySchema, inherit.PolicyTargetKey.AdditionalTargetKeys))
+				_, visible := f.visible[entry]
+				_, pending := f.pending[entry]
+				if !visible && !pending {
+					f.requests = append(f.requests, method+" "+testChromePolicyTargetString(inherit.PolicyTargetKey)+" failed")
+					http.Error(w, `{"error":{"code":400,"message":"Policy `+inherit.PolicySchema+` not found on the group"}}`, http.StatusBadRequest)
+					return
+				}
+			}
+		}
 
 		for _, inherit := range req.Requests {
-			f.inherited = append(f.inherited, inherit.PolicySchema)
+			f.requests = append(f.requests, method+" "+testChromePolicyTargetString(inherit.PolicyTargetKey))
+			entry := f.stateKey(inherit.PolicyTargetKey.TargetResource, testChromePolicyEntry(inherit.PolicySchema, inherit.PolicyTargetKey.AdditionalTargetKeys))
+			f.inherited = append(f.inherited, entry)
 			if f.reset == nil {
 				f.reset = map[string]bool{}
 			}
-			f.reset[inherit.PolicySchema] = true
-			delete(f.visible, inherit.PolicySchema)
-			delete(f.pending, inherit.PolicySchema)
+			f.reset[entry] = true
+			delete(f.visible, entry)
+			delete(f.pending, entry)
 		}
 		f.writeJSON(w, struct{}{})
+
+	case r.Method == http.MethodPost && r.URL.Path == customerPath+"/policies/groups:updateGroupPriorityOrdering":
+		var req chromepolicy.GoogleChromePolicyVersionsV1UpdateGroupPriorityOrderingRequest
+		f.readJSON(r, &req)
+		f.orderingUpdates++
+		f.requests = append(f.requests, "groups:updateGroupPriorityOrdering "+testChromePolicyTargetString(req.PolicyTargetKey))
+		if req.PolicyTargetKey == nil {
+			http.Error(w, `{"error":{"code":400,"message":"policyTargetKey is required"}}`, http.StatusBadRequest)
+			return
+		}
+		if len(req.GroupIds) == 0 {
+			http.Error(w, `{"error":{"code":400,"message":"Request must have at least one Group ID"}}`, http.StatusBadRequest)
+			return
+		}
+		groups := f.orderingGroups(req.PolicySchema, req.PolicyNamespace, req.PolicyTargetKey)
+		if len(groups) == 0 {
+			http.Error(w, `{"error":{"code":400,"message":"The policy is not configured on any Groups"}}`, http.StatusBadRequest)
+			return
+		}
+		sorted := append([]string(nil), req.GroupIds...)
+		sort.Strings(sorted)
+		if !reflect.DeepEqual(sorted, groups) {
+			http.Error(w, `{"error":{"code":400,"message":"The request must include all group IDs that are applied on the app"}}`, http.StatusBadRequest)
+			return
+		}
+		f.orderings[testChromePolicyOrderingKey(req.PolicySchema, req.PolicyNamespace, req.PolicyTargetKey)] = req.GroupIds
+		f.writeJSON(w, struct{}{})
+
+	case r.Method == http.MethodPost && r.URL.Path == customerPath+"/policies/groups:listGroupPriorityOrdering":
+		var req chromepolicy.GoogleChromePolicyVersionsV1ListGroupPriorityOrderingRequest
+		f.readJSON(r, &req)
+		if req.PolicyTargetKey == nil {
+			http.Error(w, `{"error":{"code":400,"message":"policyTargetKey is required"}}`, http.StatusBadRequest)
+			return
+		}
+		groups := f.orderingGroups(req.PolicySchema, req.PolicyNamespace, req.PolicyTargetKey)
+		if len(groups) == 0 {
+			http.Error(w, `{"error":{"code":400,"message":"The policy is not configured on any Groups"}}`, http.StatusBadRequest)
+			return
+		}
+		groupIds, ok := f.orderings[testChromePolicyOrderingKey(req.PolicySchema, req.PolicyNamespace, req.PolicyTargetKey)]
+		if !ok {
+			groupIds = groups
+		}
+		f.writeJSON(w, &chromepolicy.GoogleChromePolicyVersionsV1ListGroupPriorityOrderingResponse{
+			GroupIds:        groupIds,
+			PolicySchema:    req.PolicySchema,
+			PolicyNamespace: req.PolicyNamespace,
+			PolicyTargetKey: req.PolicyTargetKey,
+		})
 
 	default:
 		f.t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -398,6 +626,68 @@ func (f *fakeChromePolicyAPI) writeJSON(w http.ResponseWriter, v interface{}) {
 	}
 }
 
+// orderingGroups returns the IDs of the groups, in order, that have a visible value for the policy schema (or for a
+// schema in the namespace) with the additional target keys of key.
+func (f *fakeChromePolicyAPI) orderingGroups(policySchema, namespace string, key *chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey) []string {
+	var groups []string
+	for stateKey := range f.visible {
+		target := f.stateTarget(stateKey)
+		name, keys := testChromePolicyEntryKeys(f.splitStateKey(stateKey))
+		if !strings.HasPrefix(target, "groups/") || testChromePolicyKeysString(keys) != testChromePolicyKeysString(key.AdditionalTargetKeys) {
+			continue
+		}
+		group := strings.TrimPrefix(target, "groups/")
+		if (name == policySchema || (policySchema == "" && strings.HasPrefix(name, namespace+"."))) && !stringInSlice(groups, group) {
+			groups = append(groups, group)
+		}
+	}
+	sort.Strings(groups)
+	return groups
+}
+
+// stateKey returns the key of a value of the fake API: the entry on the default target, or else
+// "<target resource>@@<entry>".
+func (f *fakeChromePolicyAPI) stateKey(targetResource, entry string) string {
+	if targetResource == f.target {
+		return entry
+	}
+	return targetResource + "@@" + entry
+}
+
+// splitStateKey returns the entry of a key of the fake API.
+func (f *fakeChromePolicyAPI) splitStateKey(key string) string {
+	if i := strings.Index(key, "@@"); i >= 0 {
+		return key[i+2:]
+	}
+	return key
+}
+
+// stateTarget returns the target resource of a key of the fake API.
+func (f *fakeChromePolicyAPI) stateTarget(key string) string {
+	if i := strings.Index(key, "@@"); i >= 0 {
+		return key[:i]
+	}
+	return f.target
+}
+
+// entries returns the keys in values for targetResource and schemaName, in order. If keys is not empty, it returns
+// only the entry with these additional target keys.
+func (f *fakeChromePolicyAPI) entries(values map[string]map[string]interface{}, targetResource, schemaName string, keys map[string]string) []string {
+	var entries []string
+	for key := range values {
+		if f.stateTarget(key) != targetResource {
+			continue
+		}
+		name, entryKeys := testChromePolicyEntryKeys(f.splitStateKey(key))
+		if name != schemaName || (len(keys) > 0 && testChromePolicyKeysString(keys) != testChromePolicyKeysString(entryKeys)) {
+			continue
+		}
+		entries = append(entries, key)
+	}
+	sort.Strings(entries)
+	return entries
+}
+
 // modifyMasks returns the update masks of the write requests for schemaName, in order.
 func (f *fakeChromePolicyAPI) modifyMasks(schemaName string) []string {
 	f.mu.Lock()
@@ -411,10 +701,16 @@ func (f *fakeChromePolicyAPI) modifyMasks(schemaName string) []string {
 	return masks
 }
 
-func (f *fakeChromePolicyAPI) setVisible(schemaName string, value map[string]interface{}) {
+// setVisible sets the value of an entry on the default target.
+func (f *fakeChromePolicyAPI) setVisible(entry string, value map[string]interface{}) {
+	f.setVisibleOn(f.target, entry, value)
+}
+
+// setVisibleOn sets the value of an entry on a target resource.
+func (f *fakeChromePolicyAPI) setVisibleOn(targetResource, entry string, value map[string]interface{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.visible[schemaName] = value
+	f.visible[f.stateKey(targetResource, entry)] = value
 }
 
 // chromePolicyRedirectTransport sends every request to the test server instead of the Google API host.

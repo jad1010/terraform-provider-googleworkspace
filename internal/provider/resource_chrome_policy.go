@@ -15,7 +15,6 @@ import (
 	"math"
 	"reflect"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,8 +28,7 @@ import (
 
 func resourceChromePolicy() *schema.Resource {
 	return &schema.Resource{
-		Description: "Chrome Policy resource in the Terraform Googleworkspace provider. " +
-			"Currently only supports policies not requiring additionalTargetKeys. Chrome Policy Schema " +
+		Description: "Chrome Policy resource in the Terraform Googleworkspace provider. Chrome Policy Schema " +
 			"resides under the `https://www.googleapis.com/auth/chrome.management.policy` client scope.\n\n" +
 			"Create and update wait until the written values are visible in the API, up to the `create` and `update` " +
 			"timeouts (5 minutes by default). The write can be sent again: at half of that time if the values are not " +
@@ -65,6 +63,7 @@ func resourceChromePolicy() *schema.Resource {
 				ForceNew:         true,
 				DiffSuppressFunc: diffSuppressOrgUnitId,
 			},
+			"additional_target_keys": chromePolicyAdditionalTargetKeysSchema(),
 			"policies": {
 				Description: "Policies to set for the org unit",
 				Type:        schema.TypeList,
@@ -108,42 +107,55 @@ func resourceChromePolicy() *schema.Resource {
 const chromePolicyUnknownValue = "74D93920-ED26-11E3-AC10-0800200C9A66"
 
 func resourceChromePolicyCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	orgUnitId := strings.TrimPrefix(d.Get("org_unit_id").(string), "id:")
+	target, err := chromePolicyOrgUnitTarget(d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
 
-	log.Printf("[DEBUG] Creating Chrome Policy for org:%s", orgUnitId)
+	log.Printf("[DEBUG] Creating Chrome Policy for %s", target)
 
-	diags := applyChromePolicies(ctx, d, meta.(*apiClient), orgUnitId, nil, d.Timeout(schema.TimeoutCreate))
+	diags := applyChromePolicies(ctx, d, meta.(*apiClient), target, nil, d.Timeout(schema.TimeoutCreate))
 
-	log.Printf("[DEBUG] Finished creating Chrome Policy for org:%s", orgUnitId)
+	log.Printf("[DEBUG] Finished creating Chrome Policy for %s", target)
 	return diags
 }
 
 func resourceChromePolicyUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	log.Printf("[DEBUG] Updating Chrome Policy for org:%s", d.Id())
+	target, err := chromePolicyOrgUnitTarget(d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	return updateChromePolicies(ctx, d, meta.(*apiClient), target)
+}
+
+// updateChromePolicies writes the changed policies of a resource to target.
+func updateChromePolicies(ctx context.Context, d *schema.ResourceData, client *apiClient, target chromePolicyTarget) diag.Diagnostics {
+	log.Printf("[DEBUG] Updating Chrome Policy for %s", target)
 
 	// Update is achieved by inheriting defaults for the previous policySchemas, and then applying the new set
 	old, _ := d.GetChange("policies")
 
-	diags := applyChromePolicies(ctx, d, meta.(*apiClient), d.Id(), old.([]interface{}), d.Timeout(schema.TimeoutUpdate))
+	diags := applyChromePolicies(ctx, d, client, target, old.([]interface{}), d.Timeout(schema.TimeoutUpdate))
 	if diags.HasError() {
 		// Keep the prior state, because the API can still have the old values.
 		// Follow-up: if the error comes after a successful write, the form recorded by that write is lost too.
 		d.Partial(true)
 	}
 
-	log.Printf("[DEBUG] Finished Updating Chrome Policy for org:%s", d.Id())
+	log.Printf("[DEBUG] Finished Updating Chrome Policy for %s", target)
 	return diags
 }
 
-// applyChromePolicies writes the configured policies to the org unit and waits until the values are visible.
+// applyChromePolicies writes the configured policies to the target and waits until the values are visible.
 // The configured values are validated before the first change.
 //
 // On update, prior has the policies from state. A policy that is removed from the configuration, or that has fewer
-// fields in the configuration than in state, is inherited (reset) before the write. The update mask of a write cannot
-// clear a field: each field in the mask must have a value. Other policies are only written, because the update mask
-// then covers each field in state. If the write fails after a policy was inherited, the values from before the change
-// are written again once.
-func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *apiClient, orgUnitId string, prior []interface{}, timeout time.Duration) diag.Diagnostics {
+// fields in the configuration than in state, is reset (inherited on an org unit, deleted on a group) before the write.
+// The update mask of a write cannot clear a field: each field in the mask must have a value. Other policies are only
+// written, because the update mask then covers each field in state. If the write fails after a policy was reset, the
+// values from before the change are written again once.
+func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *apiClient, target chromePolicyTarget, prior []interface{}, timeout time.Duration) (diags diag.Diagnostics) {
 	chromePolicyService, diags := client.NewChromePolicyService()
 	if diags.HasError() {
 		return diags
@@ -166,6 +178,15 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 	if diags.HasError() {
 		return diags
 	}
+
+	targetDiags := validateChromePolicyTarget(ctx, configured, schemas, target)
+	if targetDiags.HasError() {
+		return targetDiags
+	}
+	// The warnings about the target are part of each result.
+	defer func() {
+		diags = append(targetDiags, diags...)
+	}()
 
 	configuredValues := map[string]map[string]interface{}{}
 	for _, p := range configured {
@@ -195,27 +216,9 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 		return diags
 	}
 
-	policyTargetKey := &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{
-		TargetResource: "orgunits/" + orgUnitId,
-	}
-
-	var requests []*chromepolicy.GoogleChromePolicyVersionsV1ModifyOrgUnitPolicyRequest
-	for _, p := range policies {
-		var keys []string
-		var schemaValues map[string]interface{}
-		if err := json.Unmarshal(p.Value, &schemaValues); err != nil {
-			return diag.FromErr(err)
-		}
-		for key := range schemaValues {
-			keys = append(keys, key)
-		}
-		// A sorted mask is the same for each write of the same values.
-		sort.Strings(keys)
-		requests = append(requests, &chromepolicy.GoogleChromePolicyVersionsV1ModifyOrgUnitPolicyRequest{
-			PolicyTargetKey: policyTargetKey,
-			PolicyValue:     p,
-			UpdateMask:      strings.Join(keys, ","),
-		})
+	batchModify, err := target.prepareModify(ctx, chromePoliciesService, client.Customer, policies)
+	if err != nil {
+		return diag.FromErr(err)
 	}
 
 	// The values before the change. The poll compares them with the values after the write, and they are written
@@ -227,7 +230,7 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 			continue
 		}
 
-		resolved, err := resolveChromePolicy(ctx, chromePoliciesService, client.Customer, orgUnitId, schemaName)
+		resolved, err := resolveChromePolicy(ctx, chromePoliciesService, client.Customer, target, schemaName)
 		if err != nil {
 			return diag.FromErr(err)
 		}
@@ -238,40 +241,21 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 	}
 
 	if len(inherit) > 0 {
-		var requests []*chromepolicy.GoogleChromePolicyVersionsV1InheritOrgUnitPolicyRequest
-		for _, schemaName := range inherit {
-			requests = append(requests, &chromepolicy.GoogleChromePolicyVersionsV1InheritOrgUnitPolicyRequest{
-				PolicyTargetKey: policyTargetKey,
-				PolicySchema:    schemaName,
-			})
-		}
-
-		// The poll does not wait for the inherited policies. A follow-up can poll them until they are no longer set on
-		// the org unit.
-		err := retryTimeDuration(ctx, time.Minute, func() error {
-			_, retryErr := chromePoliciesService.Orgunits.BatchInherit(fmt.Sprintf("customers/%s", client.Customer), &chromepolicy.GoogleChromePolicyVersionsV1BatchInheritOrgUnitPoliciesRequest{Requests: requests}).Context(ctx).Do()
-			return retryErr
-		})
-		if err != nil {
+		// The poll does not wait for the reset policies. A follow-up can poll them until they are no longer set on the
+		// target.
+		if err := target.reset(ctx, chromePoliciesService, client.Customer, inherit); err != nil {
 			return diag.FromErr(err)
 		}
-	}
-
-	batchModify := func() error {
-		return retryTimeDuration(ctx, time.Minute, func() error {
-			_, retryErr := chromePoliciesService.Orgunits.BatchModify(fmt.Sprintf("customers/%s", client.Customer), &chromepolicy.GoogleChromePolicyVersionsV1BatchModifyOrgUnitPoliciesRequest{Requests: requests}).Context(ctx).Do()
-			return retryErr
-		})
 	}
 
 	if err := batchModify(); err != nil {
 		if len(inherit) == 0 {
 			return diag.FromErr(err)
 		}
-		return restoreChromePolicies(ctx, chromePoliciesService, client.Customer, orgUnitId, inherit, beforeResolved, err)
+		return restoreChromePolicies(ctx, chromePoliciesService, client.Customer, target, inherit, beforeResolved, err)
 	}
 
-	d.SetId(orgUnitId)
+	d.SetId(target.id)
 
 	// batchModify can return success before the values are visible, and it does not always apply them.
 	// If the values do not become visible, keep the configured values in state and warn.
@@ -288,10 +272,10 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 		}
 	}
 
-	// The policies that were not set on this org unit before the write: not set, or inherited from a parent.
+	// The policies that were not set on the target before the write: not set, or inherited from a parent.
 	notLocalBefore := map[string]bool{}
 	for schemaName := range configuredValues {
-		if !setOnOrgUnit(beforeResolved[schemaName], orgUnitId) {
+		if !target.setOn(beforeResolved[schemaName]) {
 			notLocalBefore[schemaName] = true
 		}
 	}
@@ -300,7 +284,7 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 		service:        chromePoliciesService,
 		schemas:        schemas,
 		customer:       client.Customer,
-		orgUnitId:      orgUnitId,
+		target:         target,
 		configured:     configured,
 		before:         before,
 		notLocalBefore: notLocalBefore,
@@ -328,7 +312,7 @@ func applyChromePolicies(ctx context.Context, d *schema.ResourceData, client *ap
 		return diags
 	}
 
-	return append(diags, readChromePolicies(ctx, d, client.Customer, chromePoliciesService, schemas, forms)...)
+	return append(diags, readChromePolicies(ctx, d, client.Customer, chromePoliciesService, schemas, target, forms)...)
 }
 
 // chromePolicyAppliedForm is the value of a policy that the API stored after a write, when it differs from the
@@ -406,48 +390,38 @@ func chromePolicyKeysContain(values, keys map[string]interface{}) bool {
 	return true
 }
 
-// restoreChromePolicies writes the values from before the change again for the inherited policies that were set on
-// the org unit, after writeErr. It returns an error that tells if the values were restored.
+// restoreChromePolicies writes the values from before the change again for the reset policies that were set on the
+// target, after writeErr. It returns an error that tells if the values were restored.
 //
 // This assumes that a batchModify call that fails applies none of its requests. The API documentation does not say if
 // a failed call can apply some of them.
-func restoreChromePolicies(ctx context.Context, chromePoliciesService *chromepolicy.CustomersPoliciesService, customer, orgUnitId string, inherited []string, beforeResolved map[string]*chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy, writeErr error) diag.Diagnostics {
-	var requests []*chromepolicy.GoogleChromePolicyVersionsV1ModifyOrgUnitPolicyRequest
+func restoreChromePolicies(ctx context.Context, chromePoliciesService *chromepolicy.CustomersPoliciesService, customer string, target chromePolicyTarget, inherited []string, beforeResolved map[string]*chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy, writeErr error) diag.Diagnostics {
+	var values []*chromepolicy.GoogleChromePolicyVersionsV1PolicyValue
 	for _, schemaName := range inherited {
 		resolved := beforeResolved[schemaName]
-		values, err := resolvedChromePolicyValues(resolved)
-		if err != nil || values == nil || !setOnOrgUnit(resolved, orgUnitId) {
+		got, err := resolvedChromePolicyValues(resolved)
+		if err != nil || got == nil || !target.setOn(resolved) {
 			continue
 		}
-
-		var keys []string
-		for key := range values {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		requests = append(requests, &chromepolicy.GoogleChromePolicyVersionsV1ModifyOrgUnitPolicyRequest{
-			PolicyTargetKey: &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{TargetResource: "orgunits/" + orgUnitId},
-			PolicyValue:     &chromepolicy.GoogleChromePolicyVersionsV1PolicyValue{PolicySchema: schemaName, Value: resolved.Value.Value},
-			UpdateMask:      strings.Join(keys, ","),
-		})
+		values = append(values, &chromepolicy.GoogleChromePolicyVersionsV1PolicyValue{PolicySchema: schemaName, Value: resolved.Value.Value})
 	}
 
-	summary := fmt.Sprintf("writing the Chrome Policies for org unit %s failed after the policies %s were reset: %s. "+
+	summary := fmt.Sprintf("writing the Chrome Policies for %s failed after the policies %s were reset: %s. "+
 		"The API can still apply that write later",
-		orgUnitId, strings.Join(inherited, ", "), writeErr)
-	if len(requests) == 0 {
-		return diag.Errorf("%s. These policies were not set on the org unit before the change", summary)
+		target, strings.Join(inherited, ", "), writeErr)
+	if len(values) == 0 {
+		return diag.Errorf("%s. These policies were not set on the %s before the change", summary, target.kind())
 	}
 
 	// The restore also runs if the operation was canceled or its deadline passed.
 	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	restoreErr := retryTimeDuration(restoreCtx, time.Minute, func() error {
-		_, retryErr := chromePoliciesService.Orgunits.BatchModify(fmt.Sprintf("customers/%s", customer), &chromepolicy.GoogleChromePolicyVersionsV1BatchModifyOrgUnitPoliciesRequest{Requests: requests}).Context(restoreCtx).Do()
-		return retryErr
-	})
-	if restoreErr != nil {
-		return diag.Errorf("%s. Writing the values from before the change again also failed: %s", summary, restoreErr)
+	restore, err := target.prepareModify(restoreCtx, chromePoliciesService, customer, values)
+	if err == nil {
+		err = restore()
+	}
+	if err != nil {
+		return diag.Errorf("%s. Writing the values from before the change again also failed: %s", summary, err)
 	}
 	return diag.Errorf("%s. Terraform wrote the values from before the change again; if the first write is applied later, the next plan shows it", summary)
 }
@@ -490,9 +464,19 @@ func wrapRepeatedScalars(ctx context.Context, policies []interface{}, schemas *c
 	return out, nil
 }
 
-// resourceChromePolicyCustomizeDiff validates changed policy values at plan time.
-// If a value is not known yet, or a schema cannot be fetched, the values are validated at apply time only.
+// resourceChromePolicyCustomizeDiff validates changed policy values of an org unit resource at plan time.
 func resourceChromePolicyCustomizeDiff(ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {
+	return chromePolicyCustomizeDiff(ctx, d, meta, false)
+}
+
+// chromePolicyCustomizeDiff validates changed policy values at plan time. group tells if the target is a group.
+// If a value is not known yet, or a schema cannot be fetched, the values are validated at apply time only.
+func chromePolicyCustomizeDiff(ctx context.Context, d *schema.ResourceDiff, meta interface{}, group bool) error {
+	keys, err := chromePolicyAdditionalTargetKeys(d.Get("additional_target_keys"))
+	if err != nil {
+		return err
+	}
+
 	if d.Id() != "" && !d.HasChange("policies") {
 		// State from an earlier version of the provider has no applied_values. The SDK then plans it as a new
 		// computed value, which must not cause a change by itself.
@@ -531,6 +515,13 @@ func resourceChromePolicyCustomizeDiff(ctx context.Context, d *schema.ResourceDi
 
 	if diags := validateChromePolicies(ctx, policies, schemas); diags.HasError() {
 		return errors.New(chromePolicyErrors(diags))
+	}
+
+	if !d.NewValueKnown("additional_target_keys") {
+		return nil
+	}
+	if diags := validateChromePolicyTarget(ctx, policies, schemas, chromePolicyTarget{group: group, additionalKeys: keys}); diags.HasError() {
+		return errors.New(diags[0].Summary)
 	}
 	return nil
 }
@@ -577,8 +568,16 @@ func chromePolicyValuesKnown(policies []interface{}) bool {
 }
 
 func resourceChromePolicyRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	client := meta.(*apiClient)
+	target, err := chromePolicyOrgUnitTarget(d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
 
+	return readChromePolicyResource(ctx, d, meta.(*apiClient), target)
+}
+
+// readChromePolicyResource refreshes the policies of a resource from target.
+func readChromePolicyResource(ctx context.Context, d *schema.ResourceData, client *apiClient, target chromePolicyTarget) diag.Diagnostics {
 	chromePolicyService, diags := client.NewChromePolicyService()
 	if diags.HasError() {
 		return diags
@@ -594,18 +593,18 @@ func resourceChromePolicyRead(ctx context.Context, d *schema.ResourceData, meta 
 		return diags
 	}
 
-	log.Printf("[DEBUG] Getting Chrome Policy for org:%s", d.Id())
+	log.Printf("[DEBUG] Getting Chrome Policy for %s", target)
 
-	diags = readChromePolicies(ctx, d, client.Customer, chromePoliciesService, schemas, chromePolicyAppliedForms(d.Get("applied_values")))
+	diags = readChromePolicies(ctx, d, client.Customer, chromePoliciesService, schemas, target, chromePolicyAppliedForms(d.Get("applied_values")))
 
-	log.Printf("[DEBUG] Finished getting Chrome Policy for org:%s", d.Id())
+	log.Printf("[DEBUG] Finished getting Chrome Policy for %s", target)
 	return diags
 }
 
 // readChromePolicies sets the policies in state from the API.
 // A policy that is not set is removed from state with a warning, so that the next plan sets it again.
 // forms has the recorded forms of values, by schema name.
-func readChromePolicies(ctx context.Context, d *schema.ResourceData, customer string, chromePoliciesService *chromepolicy.CustomersPoliciesService, schemas *chromePolicySchemaCache, forms map[string]chromePolicyAppliedForm) diag.Diagnostics {
+func readChromePolicies(ctx context.Context, d *schema.ResourceData, customer string, chromePoliciesService *chromepolicy.CustomersPoliciesService, schemas *chromePolicySchemaCache, target chromePolicyTarget, forms map[string]chromePolicyAppliedForm) diag.Diagnostics {
 	var diags diag.Diagnostics
 
 	prior := map[string]map[string]interface{}{}
@@ -615,18 +614,30 @@ func readChromePolicies(ctx context.Context, d *schema.ResourceData, customer st
 		schemaName := policy["schema_name"].(string)
 		prior[schemaName] = policy["schema_values"].(map[string]interface{})
 
-		resolved, err := resolveChromePolicy(ctx, chromePoliciesService, customer, d.Id(), schemaName)
+		resolved, err := resolveChromePolicy(ctx, chromePoliciesService, customer, target, schemaName)
+		if target.group && isChromePolicyGroupNotFound(err, target.id) {
+			log.Printf("[WARN] Removing Chrome Policy for %s because the group does not exist: %s", target, err)
+			d.SetId("")
+			return append(diags, diag.Diagnostic{
+				Severity: diag.Warning,
+				Summary:  fmt.Sprintf("Chrome Policy group %s does not exist", target.id),
+				Detail: fmt.Sprintf("The Chrome Policy API returned that the %s does not exist: %s. Terraform removes the "+
+					"resource from state.", target, err),
+			})
+		}
 		if err != nil {
 			return append(diags, diag.FromErr(err)...)
 		}
 
-		if resolved == nil || resolved.Value == nil {
+		// A group gets a policy only from itself. A value with another source, for example an org unit, is not set
+		// on the group. On an org unit, an inherited value is kept, as before.
+		if resolved == nil || resolved.Value == nil || (target.group && !target.setOn(resolved)) {
 			// For example, a write that the API returned success for but did not apply.
 			diags = append(diags, diag.Diagnostic{
 				Severity: diag.Warning,
 				Summary:  fmt.Sprintf("Chrome Policy %s is not set", schemaName),
-				Detail: fmt.Sprintf("The Chrome Policy %s is not set for org unit %s. "+
-					"Terraform removes it from state, and the next plan sets it again.", schemaName, d.Id()),
+				Detail: fmt.Sprintf("The Chrome Policy %s is not set for %s. "+
+					"Terraform removes it from state, and the next plan sets it again.", schemaName, target),
 			})
 			continue
 		}
@@ -635,7 +646,7 @@ func readChromePolicies(ctx context.Context, d *schema.ResourceData, customer st
 	}
 
 	if len(policiesObj) == 0 {
-		log.Printf("[WARN] Removing Chrome Policy for org:%s because none of its policies are set", d.Id())
+		log.Printf("[WARN] Removing Chrome Policy for %s because none of its policies are set", target)
 		d.SetId("")
 		return diags
 	}
@@ -665,8 +676,17 @@ func readChromePolicies(ctx context.Context, d *schema.ResourceData, customer st
 }
 
 func resourceChromePolicyDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	client := meta.(*apiClient)
+	target, err := chromePolicyOrgUnitTarget(d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
 
+	return deleteChromePolicies(ctx, d, meta.(*apiClient), target)
+}
+
+// deleteChromePolicies resets the policies of a resource on target: an org unit inherits them, and they are deleted
+// from a group.
+func deleteChromePolicies(ctx context.Context, d *schema.ResourceData, client *apiClient, target chromePolicyTarget) diag.Diagnostics {
 	chromePolicyService, diags := client.NewChromePolicyService()
 	if diags.HasError() {
 		return diags
@@ -677,66 +697,82 @@ func resourceChromePolicyDelete(ctx context.Context, d *schema.ResourceData, met
 		return diags
 	}
 
-	log.Printf("[DEBUG] Deleting Chrome Policy for org:%s", d.Id())
+	log.Printf("[DEBUG] Deleting Chrome Policy for %s", target)
 
-	policyTargetKey := &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{
-		TargetResource: "orgunits/" + d.Id(),
-	}
-
-	var requests []*chromepolicy.GoogleChromePolicyVersionsV1InheritOrgUnitPolicyRequest
-	for _, p := range d.Get("policies").([]interface{}) {
-		policy := p.(map[string]interface{})
-		schemaName := policy["schema_name"].(string)
-
-		requests = append(requests, &chromepolicy.GoogleChromePolicyVersionsV1InheritOrgUnitPolicyRequest{
-			PolicyTargetKey: policyTargetKey,
-			PolicySchema:    schemaName,
-		})
-	}
-
-	// Delete does not wait for the inherited policies. A follow-up can poll them until they are no longer set on the
-	// org unit.
-	err := retryTimeDuration(ctx, time.Minute, func() error {
-		_, retryErr := chromePoliciesService.Orgunits.BatchInherit(fmt.Sprintf("customers/%s", client.Customer), &chromepolicy.GoogleChromePolicyVersionsV1BatchInheritOrgUnitPoliciesRequest{Requests: requests}).Context(ctx).Do()
-		return retryErr
-	})
-
-	if err != nil {
+	// Delete does not wait for the reset policies. A follow-up can poll them until they are no longer set on the
+	// target.
+	if err := target.reset(ctx, chromePoliciesService, client.Customer, chromePolicyNames(d.Get("policies").([]interface{}))); err != nil {
 		return diag.FromErr(err)
 	}
 
-	log.Printf("[DEBUG] Finished deleting Chrome Policy for org:%s", d.Id())
+	log.Printf("[DEBUG] Finished deleting Chrome Policy for %s", target)
 	return nil
 }
 
-// resolveChromePolicy returns the resolved policy schemaName for the org unit, or nil if the policy is not set.
-func resolveChromePolicy(ctx context.Context, chromePoliciesService *chromepolicy.CustomersPoliciesService, customer, orgUnitId, schemaName string) (*chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy, error) {
-	var resp *chromepolicy.GoogleChromePolicyVersionsV1ResolveResponse
-	err := retryTimeDuration(ctx, time.Minute, func() error {
-		var retryErr error
+// resolveChromePolicy returns the resolved policy schemaName for the target, or nil if the policy is not set.
+// The API can return a policy for more than one target, for example for each app. Only the policy for the target, with
+// the same additional target keys, is returned.
+func resolveChromePolicy(ctx context.Context, chromePoliciesService *chromepolicy.CustomersPoliciesService, customer string, target chromePolicyTarget, schemaName string) (*chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy, error) {
+	var resolved, matched []*chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy
+	pageToken := ""
+	for {
+		var resp *chromepolicy.GoogleChromePolicyVersionsV1ResolveResponse
+		err := retryTimeDuration(ctx, time.Minute, func() error {
+			var retryErr error
+			resp, retryErr = chromePoliciesService.Resolve(fmt.Sprintf("customers/%s", customer), &chromepolicy.GoogleChromePolicyVersionsV1ResolveRequest{
+				PolicySchemaFilter: schemaName,
+				PolicyTargetKey:    target.key(),
+				PageToken:          pageToken,
+			}).Context(ctx).Do()
+			return retryErr
+		})
+		if err != nil {
+			return nil, err
+		}
 
-		// we will resolve each individual policySchema by fully qualified name, so the responses should be a single result
-		resp, retryErr = chromePoliciesService.Resolve(fmt.Sprintf("customers/%s", customer), &chromepolicy.GoogleChromePolicyVersionsV1ResolveRequest{
-			PolicySchemaFilter: schemaName,
-			PolicyTargetKey: &chromepolicy.GoogleChromePolicyVersionsV1PolicyTargetKey{
-				TargetResource: "orgunits/" + orgUnitId,
-			},
-		}).Context(ctx).Do()
+		for _, policy := range resp.ResolvedPolicies {
+			if policy == nil {
+				continue
+			}
+			resolved = append(resolved, policy)
+			if target.matches(policy) {
+				matched = append(matched, policy)
+			}
+		}
 
-		return retryErr
-	})
-	if err != nil {
-		return nil, err
+		if resp.NextPageToken == "" || resp.NextPageToken == pageToken {
+			break
+		}
+		pageToken = resp.NextPageToken
 	}
 
-	switch len(resp.ResolvedPolicies) {
+	switch len(matched) {
 	case 0:
+		if len(resolved) == 0 {
+			return nil, nil
+		}
+		// A resolved policy that does not match has a target key (see matches).
+		withKeys := false
+		for _, policy := range resolved {
+			if len(policy.TargetKey.AdditionalTargetKeys) > 0 {
+				withKeys = true
+			}
+		}
+		if !withKeys {
+			return nil, fmt.Errorf("the API resolved the policy %s for the target resource %q without additional target keys, not for %s",
+				schemaName, resolved[0].TargetKey.TargetResource, target)
+		}
+		if len(target.additionalKeys) == 0 {
+			return nil, fmt.Errorf("the API resolved %d policies for schema %s in %s, each for other additional target keys "+
+				"(for example, one for each app): set additional_target_keys to select one", len(resolved), schemaName, target)
+		}
+		// The policy is set only for other additional target keys, for example for other apps.
 		return nil, nil
 	case 1:
-		return resp.ResolvedPolicies[0], nil
+		return matched[0], nil
 	default:
-		return nil, fmt.Errorf("unexpected number of resolved policies for schema %s in org unit %s: got %d, expected 1 "+
-			"(policies that require additionalTargetKeys are not supported)", schemaName, orgUnitId, len(resp.ResolvedPolicies))
+		return nil, fmt.Errorf("unexpected number of resolved policies for schema %s in %s: got %d, expected 1 "+
+			"(set additional_target_keys for policies that require them)", schemaName, target, len(matched))
 	}
 }
 
@@ -761,13 +797,6 @@ func unmarshalChromePolicyJSON(data []byte, v interface{}) error {
 	return decoder.Decode(v)
 }
 
-// setOnOrgUnit reports whether the resolved policy is set on the org unit. A policy that is inherited from a parent
-// is not. A policy without a source key is not either: the API documents that its value is the default value for the
-// customer.
-func setOnOrgUnit(resolved *chromepolicy.GoogleChromePolicyVersionsV1ResolvedPolicy, orgUnitId string) bool {
-	return resolved != nil && resolved.SourceKey != nil && resolved.SourceKey.TargetResource == "orgunits/"+orgUnitId
-}
-
 // chromePolicyState is the state of a policy in a round of the poll after a write.
 type chromePolicyState int
 
@@ -778,7 +807,7 @@ const (
 	chromePolicyMatches
 	// chromePolicyRecordedForm: the value is the recorded form for the configured values.
 	chromePolicyRecordedForm
-	// chromePolicyCandidate: a new value on the org unit that differs from the configuration. Before it is accepted,
+	// chromePolicyCandidate: a new value on the target that differs from the configuration. Before it is accepted,
 	// the write is sent again, and the value must not change in two rounds after that.
 	chromePolicyCandidate
 	// chromePolicyNewForm: a candidate that did not change in two rounds after the write was sent again. It is
@@ -796,11 +825,11 @@ type chromePolicyRound struct {
 	matches bool
 	// recorded is true if the value is the recorded form for the configured values.
 	recorded bool
-	// local is true if the value is set on this org unit (its source key is the org unit).
+	// local is true if the value is set on the target (its source key is the target).
 	local bool
 	// sameAsBefore is true if the value is the value from before the write.
 	sameAsBefore bool
-	// notLocalBefore is true if the policy was not set on this org unit before the write.
+	// notLocalBefore is true if the policy was not set on the target before the write.
 	notLocalBefore bool
 	// stable is true if the value is the same as in the previous round.
 	stable bool
@@ -811,8 +840,8 @@ type chromePolicyRound struct {
 
 // classifyChromePolicy returns the state of a policy in a round of the poll.
 //
-// A value that is new on the org unit (different from the value before the write, or set on the org unit for the
-// first time) and that differs from the configuration is only a candidate: another writer, or a write that was not
+// A value that is new on the target (different from the value before the write, or set on the target for the first
+// time) and that differs from the configuration is only a candidate: another writer, or a write that was not
 // applied, can also cause it. The write is sent again, and only a value that stays the same after that is the result
 // of the write.
 func classifyChromePolicy(r chromePolicyRound) chromePolicyState {
@@ -839,13 +868,13 @@ type chromePolicyPoll struct {
 	service    *chromepolicy.CustomersPoliciesService
 	schemas    *chromePolicySchemaCache
 	customer   string
-	orgUnitId  string
+	target     chromePolicyTarget
 	configured []interface{}
 	// before has the values before the write, by schema name.
 	before map[string]map[string]interface{}
-	// notLocalBefore has the schema names that were not set on the org unit before the write.
+	// notLocalBefore has the schema names that were not set on the target before the write.
 	notLocalBefore map[string]bool
-	// reset has the schema names that were inherited (reset) before the write.
+	// reset has the schema names that were reset before the write (inherited on an org unit, deleted on a group).
 	reset map[string]bool
 	// recorded has the recorded forms for the configured values, by schema name.
 	recorded map[string]chromePolicyAppliedForm
@@ -870,7 +899,7 @@ type chromePolicyCandidateValue struct {
 // half of that time, the write is sent again, because the API sometimes returns success for a write that it does not
 // apply. At the timeout, a policy that still has the value from before the write, after the write was sent again, gets
 // its own warning, and nothing is recorded for it. A policy that was reset before the write and has not converged is an
-// error, because the org unit can now use inherited values. If the context is canceled, it returns an error.
+// error, because the target does not have the values that it had before the change. If the context is canceled, it returns an error.
 func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Diagnostics, bool, map[string]json.RawMessage) {
 	start := time.Now()
 	deadline := start.Add(poll.timeout)
@@ -897,10 +926,10 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 	var stopDiags diag.Diagnostics
 
 	sendAgain := func(reason string) {
-		log.Printf("[WARN] Sending the Chrome Policy write for org:%s again after %s: %s",
-			poll.orgUnitId, time.Since(start).Round(time.Second), reason)
+		log.Printf("[WARN] Sending the Chrome Policy write for %s again after %s: %s",
+			poll.target, time.Since(start).Round(time.Second), reason)
 		if resendErr = poll.resend(); resendErr != nil {
-			log.Printf("[WARN] Sending the Chrome Policy write again for org:%s failed: %s", poll.orgUnitId, resendErr)
+			log.Printf("[WARN] Sending the Chrome Policy write again for %s failed: %s", poll.target, resendErr)
 			return
 		}
 		resends++
@@ -932,7 +961,7 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 					return nil
 				}
 
-				resolved, err := resolveChromePolicy(ctx, poll.service, poll.customer, poll.orgUnitId, schemaName)
+				resolved, err := resolveChromePolicy(ctx, poll.service, poll.customer, poll.target, schemaName)
 				if err != nil {
 					return err
 				}
@@ -952,7 +981,7 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 
 				round := chromePolicyRound{
 					set:            got != nil,
-					local:          setOnOrgUnit(resolved, poll.orgUnitId),
+					local:          poll.target.setOn(resolved),
 					sameAsBefore:   reflect.DeepEqual(got, poll.before[schemaName]),
 					notLocalBefore: poll.notLocalBefore[schemaName],
 					stable:         reflect.DeepEqual(got, previous[schemaName]),
@@ -999,7 +1028,7 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 				sendAgain("confirm the new values")
 			}
 			if len(pending) > 0 {
-				return fmt.Errorf("timed out while waiting for Chrome Policies %s to be set for org:%s", strings.Join(pending, ", "), poll.orgUnitId)
+				return fmt.Errorf("timed out while waiting for Chrome Policies %s to be set for %s", strings.Join(pending, ", "), poll.target)
 			}
 			return nil
 		})
@@ -1010,8 +1039,8 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 	elapsed := time.Since(start).Round(time.Second)
 
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return diag.Errorf("the operation was canceled while waiting for the Chrome Policies of org unit %s to be visible, after %s. "+
-			"The write was sent; the next plan shows the values that the API has", poll.orgUnitId, elapsed), false, nil
+		return diag.Errorf("the operation was canceled while waiting for the Chrome Policies of %s to be visible, after %s. "+
+			"The write was sent; the next plan shows the values that the API has", poll.target, elapsed), false, nil
 	}
 
 	if len(stopDiags) > 0 {
@@ -1037,11 +1066,15 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 		}
 
 		if len(resetNames) > 0 {
+			detail := "The org unit can now use the inherited values for these policies."
+			if poll.target.group {
+				detail = "The group does not set these policies now."
+			}
 			diags = append(diags, diag.Diagnostic{
 				Severity: diag.Error,
-				Summary: fmt.Sprintf("Chrome Policies %s on org unit %s were reset before the write, and the configured values are not visible after %s",
-					strings.Join(resetNames, ", "), poll.orgUnitId, elapsed),
-				Detail: "The org unit can now use the inherited values for these policies. Apply again, or check the policies in the Admin console.",
+				Summary: fmt.Sprintf("Chrome Policies %s on %s were reset before the write, and the configured values are not visible after %s",
+					strings.Join(resetNames, ", "), poll.target, elapsed),
+				Detail: detail + " Apply again, or check the policies in the Admin console.",
 			})
 		}
 
@@ -1049,17 +1082,17 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 			diags = append(diags, diag.Diagnostic{
 				Severity: diag.Warning,
 				Summary:  "Chrome Policy values did not change",
-				Detail: fmt.Sprintf("After the write, and after Terraform sent it again, %s on org unit %s still have the value from before the write. "+
+				Detail: fmt.Sprintf("After the write, and after Terraform sent it again, %s on %s still have the value from before the write. "+
 					"Either the API stores the configured value in this form, or the write was not applied. Terraform did not record it; the next plan shows a change. "+
 					"If the plan shows the value you intend, set the configuration to that form. If not, apply again or check the Admin console.",
-					strings.Join(unchangedNames, ", "), poll.orgUnitId),
+					strings.Join(unchangedNames, ", "), poll.target),
 			})
 		}
 
 		if len(notVisible) > 0 {
-			detail := fmt.Sprintf("The Chrome Policy API accepted the change for org unit %s, but these policies did not have the configured values after %s: %s. "+
+			detail := fmt.Sprintf("The Chrome Policy API accepted the change for %s, but these policies did not have the configured values after %s: %s. "+
 				"Terraform saved the configured values. If the values are still not set, the next plan shows a change to set them again.",
-				poll.orgUnitId, elapsed, strings.Join(notVisible, ", "))
+				poll.target, elapsed, strings.Join(notVisible, ", "))
 			if resendErr != nil {
 				detail += fmt.Sprintf(" Terraform sent the write again, and that request failed: %s.", resendErr)
 			}
@@ -1071,24 +1104,24 @@ func waitForChromePolicies(ctx context.Context, poll chromePolicyPoll) (diag.Dia
 		}
 
 		// The time is used up, so the values are not read again. The state keeps the configured values.
-		return append(diags, chromePolicyChangedWarning(changed, poll.orgUnitId)...), false, applied
+		return append(diags, chromePolicyChangedWarning(changed, poll.target)...), false, applied
 	}
 
-	return chromePolicyChangedWarning(changed, poll.orgUnitId), true, applied
+	return chromePolicyChangedWarning(changed, poll.target), true, applied
 }
 
 // chromePolicyChangedWarning returns a warning for the policies whose values differ from the configuration after a
 // write, or nothing if there are none.
-func chromePolicyChangedWarning(changed []string, orgUnitId string) diag.Diagnostics {
+func chromePolicyChangedWarning(changed []string, target chromePolicyTarget) diag.Diagnostics {
 	if len(changed) == 0 {
 		return nil
 	}
 	return diag.Diagnostics{{
 		Severity: diag.Warning,
 		Summary:  "Chrome Policy values differ from the configuration",
-		Detail: fmt.Sprintf("After the write, the API returns values for %s on org unit %s that differ from the configuration and do not change. "+
+		Detail: fmt.Sprintf("After the write, the API returns values for %s on %s that differ from the configuration and do not change. "+
 			"The API can normalize values. Terraform records these values in applied_values, and shows no change for these "+
-			"policies while the API values and the configured values stay the same.", strings.Join(changed, ", "), orgUnitId),
+			"policies while the API values and the configured values stay the same.", strings.Join(changed, ", "), target),
 	}}
 }
 
