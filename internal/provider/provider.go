@@ -127,6 +127,7 @@ func New(version string) func() *schema.Provider {
 				"googleworkspace_group_member":         dataSourceGroupMember(),
 				"googleworkspace_group_members":        dataSourceGroupMembers(),
 				"googleworkspace_group_settings":       dataSourceGroupSettings(),
+				"googleworkspace_license_assignments":  dataSourceLicenseAssignments(),
 				"googleworkspace_org_unit":             dataSourceOrgUnit(),
 				"googleworkspace_privileges":           dataSourcePrivileges(),
 				"googleworkspace_role":                 dataSourceRole(),
@@ -144,6 +145,7 @@ func New(version string) func() *schema.Provider {
 				"googleworkspace_group_member":        resourceGroupMember(),
 				"googleworkspace_group_members":       resourceGroupMembers(),
 				"googleworkspace_group_settings":      resourceGroupSettings(),
+				"googleworkspace_license_assignment":  resourceLicenseAssignment(),
 				"googleworkspace_org_unit":            resourceOrgUnit(),
 				"googleworkspace_role":                resourceRole(),
 				"googleworkspace_role_assignment":     resourceRoleAssignment(),
@@ -163,7 +165,12 @@ func New(version string) func() *schema.Provider {
 func configure(version string, p *schema.Provider) func(context.Context, *schema.ResourceData) (interface{}, diag.Diagnostics) {
 	return func(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
 		var diags diag.Diagnostics
-		config := apiClient{gmailClients: &gmailClientCache{}}
+		config := apiClient{
+			gmailClients:           &gmailClientCache{},
+			licensingCustomer:      &licensingCustomerCache{},
+			licenseAssignmentLists: &licenseAssignmentListCache{},
+			directoryLookups:       &directoryLookupState{},
+		}
 
 		// Get access token
 		if v, ok := d.GetOk("access_token"); ok {

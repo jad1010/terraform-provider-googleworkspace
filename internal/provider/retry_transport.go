@@ -89,6 +89,10 @@ Retry:
 			log.Printf("[DEBUG] Retry Transport: Stopping retries, last request failed with non-retryable error: %s", retryErr.Err)
 			break Retry
 		}
+		if isNoRetryOnPreconditionFailed(req.Context()) && isApiErrorWithCode(retryErr.Err, http.StatusPreconditionFailed) {
+			log.Printf("[DEBUG] Retry Transport: Stopping retries, the request does not retry 412 errors: %s", retryErr.Err)
+			break Retry
+		}
 
 		log.Printf("[DEBUG] Retry Transport: Waiting %s before trying request again", backoff)
 		select {
@@ -107,6 +111,21 @@ Retry:
 	}
 	log.Printf("[DEBUG] Retry Transport: Returning after %d attempts", attempts)
 	return resp, respErr
+}
+
+type noRetryOnPreconditionFailedKey struct{}
+
+// withNoRetryOnPreconditionFailed returns a context that makes the retry
+// transport return a 412 Precondition Failed response at once for a request
+// that uses this context. Other requests still retry 412 responses (see
+// isConcurrentUpdateError). Use it for a call where a 412 is not transient.
+func withNoRetryOnPreconditionFailed(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noRetryOnPreconditionFailedKey{}, true)
+}
+
+func isNoRetryOnPreconditionFailed(ctx context.Context) bool {
+	noRetry, _ := ctx.Value(noRetryOnPreconditionFailedKey{}).(bool)
+	return noRetry
 }
 
 // checkForRetryableError uses the googleapi.CheckResponse util to check for

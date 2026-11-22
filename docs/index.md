@@ -77,11 +77,59 @@ More information about scopes is below.
 
 #### Configuring scopes requested by the provider
 
-The provider can be configured with an `oauth_scopes` field containing a list of requested scopes. If `oauth_scopes` is _not_ set in the provider configuration, the provider will fall back to a default list of scopes, which are all the scopes needed to manage resources that can be provisioned by the provider ([see default scopes for v0.6.0 here](https://github.com/hashicorp/terraform-provider-googleworkspace/blob/v0.6.0/internal/provider/provider.go#L17-L30)). If default scopes are used, the service account needs to be granted all of those scopes in Google Workspace.
+The provider can be configured with an `oauth_scopes` field containing a list of requested scopes. If `oauth_scopes` is _not_ set in the provider configuration, the provider will fall back to a default list of scopes, which are all the scopes needed to manage resources that can be provisioned by the provider, except the licensing scope (see [Scopes for license assignments](#scopes-for-license-assignments)) ([see default scopes for v0.6.0 here](https://github.com/hashicorp/terraform-provider-googleworkspace/blob/v0.6.0/internal/provider/provider.go#L17-L30)). If default scopes are used, the service account needs to be granted all of those scopes in Google Workspace.
 
 The scopes declared in the provider's configuration need to match, or be a subset of, the scopes granted to the service account. If a provider is configured with scopes the service account isn't granted to use, the provider will receive a `401 Unauthorized` response when it requests an access token.
 
 ->It's recommended to include `oath_scopes` in your provider configuration to make the requested scopes explicit and easier to debug issues.
+
+#### Scopes for license assignments
+
+The `googleworkspace_license_assignment` resource and the `googleworkspace_license_assignments` data source use the
+[Enterprise License Manager API](https://developers.google.com/workspace/admin/licensing/v1/how-tos/using),
+which requires the `https://www.googleapis.com/auth/apps.licensing` scope. This scope is **not** in the default list of
+scopes. If the provider requested it by default, each configuration that uses domain-wide delegation without this
+scope granted to the service account would fail to get an access token, also for all other resources.
+
+The license resources also read from the Directory API. All the scopes that they use are:
+
+| Scope | Used by |
+|-------|---------|
+| `https://www.googleapis.com/auth/apps.licensing` | Always. |
+| `https://www.googleapis.com/auth/admin.directory.user.readonly` (or `admin.directory.user`, a default scope) | `googleworkspace_license_assignment`: to store `directory_user_id`, to follow a renamed user, to check a change to `user_id` at plan time, and to find the user by `directory_user_id` before a refresh, a delete or a SKU change. With `directory_user_id` set, each refresh makes one Directory API request for each license assignment. Without this scope, or if the admin role cannot read users, `directory_user_id` stays empty and the resource uses only the License Manager API: a renamed user is not followed (the refresh removes the license assignment from state, a destroy does not remove the license, and the next apply fails with a `412` error until you import the license assignment with the new address), and a change to `user_id` replaces the license assignment. See the resource documentation. |
+| `https://www.googleapis.com/auth/admin.directory.customer.readonly` (or `admin.directory.customer`, a default scope) | Both, only if `customer_id` is `my_customer`: the License Manager API documents `customerId` as the unique customer ID, so the provider gets it from the Directory API. |
+
+To manage license assignments:
+
+1. Enable the Enterprise License Manager API (`licensing.googleapis.com`) in the Google Cloud project of the service account.
+2. If you use domain-wide delegation, grant the scopes to the service account in the Admin console.
+3. Set `oauth_scopes` in the provider configuration. `oauth_scopes` replaces the default list, so include all the
+   scopes that your other resources need. For example, the default scopes (which include `admin.directory.user`
+   and `admin.directory.customer`) plus the licensing scope:
+
+```terraform
+provider "googleworkspace" {
+  customer_id             = "A01b123xz"
+  impersonated_user_email = "impersonated@example.com"
+  oauth_scopes = [
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.sharing",
+    "https://www.googleapis.com/auth/chrome.management.policy",
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/admin.directory.customer",
+    "https://www.googleapis.com/auth/admin.directory.domain",
+    "https://www.googleapis.com/auth/admin.directory.group",
+    "https://www.googleapis.com/auth/admin.directory.orgunit",
+    "https://www.googleapis.com/auth/admin.directory.rolemanagement",
+    "https://www.googleapis.com/auth/admin.directory.userschema",
+    "https://www.googleapis.com/auth/admin.directory.user",
+    "https://www.googleapis.com/auth/apps.groups.settings",
+    "https://www.googleapis.com/auth/apps.licensing",
+  ]
+}
+```
+
+If you authenticate with `access_token` without `impersonated_user_email`, the provider ignores `oauth_scopes`. The token must then already include the scopes above.
 
 
 #### Impersonating a Google Workspace User

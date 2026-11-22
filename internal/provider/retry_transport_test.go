@@ -307,3 +307,71 @@ func testRetryTransportRetryPredicate(err error) (bool, string) {
 	}
 	return false, ""
 }
+
+// A 412 from a request that uses withNoRetryOnPreconditionFailed (the license
+// insert) returns at once. A 412 from other requests (for example Directory
+// API calls) is still retried by isConcurrentUpdateError.
+func TestRetryTransport_PreconditionFailed(t *testing.T) {
+	cases := map[string]struct {
+		ctx          func(context.Context) context.Context
+		wantCode     int
+		wantAttempts int
+	}{
+		"licensing insert is not retried": {
+			ctx:          withNoRetryOnPreconditionFailed,
+			wantCode:     http.StatusPreconditionFailed,
+			wantAttempts: 1,
+		},
+		"directory request is retried": {
+			ctx:          func(ctx context.Context) context.Context { return ctx },
+			wantCode:     http.StatusOK,
+			wantAttempts: 2,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			attempts := 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				attempts++
+				attempt := attempts
+				mu.Unlock()
+
+				if attempt == 1 {
+					w.WriteHeader(http.StatusPreconditionFailed)
+					w.Write([]byte(`{"error":{"code":412,"message":"User already has a license for the specified product and SKU"}}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer ts.Close()
+
+			client := ts.Client()
+			client.Transport = NewTransportWithDefaultRetries(http.DefaultTransport)
+
+			ctx, cc := context.WithTimeout(context.Background(), time.Second*5)
+			defer cc()
+			req, err := http.NewRequestWithContext(tc.ctx(ctx), "POST", ts.URL, nil)
+			if err != nil {
+				t.Fatalf("unable to construct request: %v", err)
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != tc.wantCode {
+				t.Errorf("got status code %d, want %d", resp.StatusCode, tc.wantCode)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if attempts != tc.wantAttempts {
+				t.Errorf("got %d attempts, want %d", attempts, tc.wantAttempts)
+			}
+		})
+	}
+}
