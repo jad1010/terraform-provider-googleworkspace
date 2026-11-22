@@ -5,8 +5,11 @@ package googleworkspace
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -25,8 +28,16 @@ import (
 	"google.golang.org/api/transport"
 )
 
+// impersonateTokenSource creates the token source that impersonates a user
+// through service_account with the access_token authentication. Unit tests
+// replace it to check the impersonation without network access.
+var impersonateTokenSource = impersonate.CredentialsTokenSource
+
 type apiClient struct {
 	client *http.Client
+	// gmailClients caches the HTTP clients that impersonate Gmail users. It is
+	// a pointer, so copies of the apiClient share the cache.
+	gmailClients *gmailClientCache
 
 	AccessToken           string
 	ClientScopes          []string
@@ -59,12 +70,19 @@ func (c *apiClient) loadAndValidate(ctx context.Context) diag.Diagnostics {
 				diags = append(diags, diag.Diagnostic{
 					Severity: diag.Error,
 					Summary:  "service_account is required to impersonate a user with the access_token authentication.",
+					Detail: fmt.Sprintf("The provider must impersonate %q, and access_token is set. "+
+						"Gmail resources (googleworkspace_gmail_send_as_alias, googleworkspace_user_delegate) always impersonate the mailbox owner. "+
+						"Set service_account to a service account that has domain-wide delegation for the oauth_scopes, "+
+						"and grant the principal of access_token the Service Account Token Creator role "+
+						"(roles/iam.serviceAccountTokenCreator) on that service account. "+
+						"Or remove access_token, so that credentials or the application default credentials are used.",
+						c.ImpersonatedUserEmail),
 				})
 
 				return diags
 			}
 
-			tokenSource, err := impersonate.CredentialsTokenSource(context.TODO(), impersonate.CredentialsConfig{
+			tokenSource, err := impersonateTokenSource(ctx, impersonate.CredentialsConfig{
 				TargetPrincipal: c.ServiceAccount,
 				Scopes:          c.ClientScopes,
 				Subject:         c.ImpersonatedUserEmail,
@@ -199,20 +217,24 @@ func (c *apiClient) NewGmailService(ctx context.Context, userId string) (*gmail.
 
 	// the send-as-alias resource requires the oauth token impersonate the user
 	// the alias is being created for.
-	log.Printf("[INFO] Creating Google Admin Gmail client that impersonates %q", userId)
-	newClient := &apiClient{
-		Credentials:           c.Credentials,
-		ClientScopes:          c.ClientScopes,
-		Customer:              c.Customer,
-		UserAgent:             c.UserAgent,
-		ImpersonatedUserEmail: userId,
-	}
-	diags = newClient.loadAndValidate(ctx)
+	httpClient, diags := c.gmailClients.get(userId, func() (*http.Client, diag.Diagnostics) {
+		log.Printf("[INFO] Creating Google Admin Gmail client that impersonates %q", userId)
+		// Copy every field (access token, service account, credentials, ...) so
+		// the new client authenticates the same way as the provider; only the
+		// impersonated user and the HTTP client differ.
+		newClient := *c
+		newClient.client = nil
+		newClient.ImpersonatedUserEmail = userId
+		// The client is cached and used after this call, so it must not stop
+		// when ctx is canceled.
+		diags := newClient.loadAndValidate(context.WithoutCancel(ctx))
+		return newClient.client, diags
+	})
 	if diags.HasError() {
 		return nil, diags
 	}
 
-	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(newClient.client))
+	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, diag.FromErr(err)
 	}
@@ -227,6 +249,53 @@ func (c *apiClient) NewGmailService(ctx context.Context, userId string) (*gmail.
 	}
 
 	return gmailService, diags
+}
+
+// gmailClientCache keeps one HTTP client for each impersonated Gmail user, so
+// each resource operation does not create a new client and token source.
+type gmailClientCache struct {
+	mu      sync.Mutex
+	clients map[string]*gmailClientEntry
+}
+
+// gmailClientEntry is created once. Its own sync.Once lets the clients of
+// different users be created at the same time.
+type gmailClientEntry struct {
+	once   sync.Once
+	client *http.Client
+	diags  diag.Diagnostics
+}
+
+// get returns the cached client for userId, or calls create and caches the
+// new client. Email addresses are not case-sensitive. A client that failed is
+// not cached, so the next call tries again. A nil cache caches nothing.
+func (g *gmailClientCache) get(userId string, create func() (*http.Client, diag.Diagnostics)) (*http.Client, diag.Diagnostics) {
+	if g == nil {
+		return create()
+	}
+
+	key := strings.ToLower(userId)
+	g.mu.Lock()
+	entry, ok := g.clients[key]
+	if !ok {
+		if g.clients == nil {
+			g.clients = make(map[string]*gmailClientEntry)
+		}
+		entry = &gmailClientEntry{}
+		g.clients[key] = entry
+	}
+	g.mu.Unlock()
+
+	entry.once.Do(func() { entry.client, entry.diags = create() })
+	if entry.diags.HasError() {
+		g.mu.Lock()
+		if g.clients[key] == entry {
+			delete(g.clients, key)
+		}
+		g.mu.Unlock()
+		return nil, entry.diags
+	}
+	return entry.client, entry.diags
 }
 
 func (c *apiClient) NewGroupsSettingsService() (*groupssettings.Service, diag.Diagnostics) {

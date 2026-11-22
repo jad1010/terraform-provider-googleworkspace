@@ -19,6 +19,12 @@ import (
 // otherwise it will be difficult to support import
 const sendAsIdSeparator = ":"
 
+// newGmailSendAsAliasService creates the Gmail service that impersonates the
+// mailbox owner. Unit tests replace it to send the requests to a fake Gmail API.
+var newGmailSendAsAliasService = func(ctx context.Context, client *apiClient, primaryEmail string) (*gmail.Service, diag.Diagnostics) {
+	return client.NewGmailService(ctx, primaryEmail)
+}
+
 func resourceGmailSendAsAlias() *schema.Resource {
 	return &schema.Resource{
 		Description: "Gmail Send As Alias resource in the Terraform Googleworkspace provider. " +
@@ -37,10 +43,12 @@ func resourceGmailSendAsAlias() *schema.Resource {
 
 		Schema: map[string]*schema.Schema{
 			"primary_email": {
-				Description: "User's primary email address.",
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
+				Description: "User's primary email address. This must be the primary address of the mailbox, not an " +
+					"alias: it is the Gmail user ID of each request and the user that the provider impersonates, and " +
+					"Gmail may reject an alias as a user ID.",
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
 			},
 			"send_as_email": {
 				Description: "The email address that appears in the 'From:' header for mail sent using this alias.",
@@ -138,7 +146,7 @@ func resourceGmailSendAsAliasCreate(ctx context.Context, d *schema.ResourceData,
 	client := meta.(*apiClient)
 
 	primaryEmail := d.Get("primary_email").(string)
-	gmailService, diags := client.NewGmailService(ctx, primaryEmail)
+	gmailService, diags := newGmailSendAsAliasService(ctx, client, primaryEmail)
 	if diags.HasError() {
 		return diags
 	}
@@ -151,7 +159,7 @@ func resourceGmailSendAsAliasCreate(ctx context.Context, d *schema.ResourceData,
 	sendAsEmail := d.Get("send_as_email").(string)
 	log.Printf("[DEBUG] Creating Gmail Send As Alias %q", primaryEmail+sendAsIdSeparator+sendAsEmail)
 
-	sendAs, err := sendAsAliasService.Create("me", &gmail.SendAs{
+	sendAs, err := sendAsAliasService.Create(primaryEmail, &gmail.SendAs{
 		SendAsEmail:    sendAsEmail,
 		DisplayName:    d.Get("display_name").(string),
 		ReplyToAddress: d.Get("reply_to_address").(string),
@@ -176,7 +184,7 @@ func resourceGmailSendAsAliasUpdate(ctx context.Context, d *schema.ResourceData,
 	client := meta.(*apiClient)
 
 	primaryEmail := d.Get("primary_email").(string)
-	gmailService, diags := client.NewGmailService(ctx, primaryEmail)
+	gmailService, diags := newGmailSendAsAliasService(ctx, client, primaryEmail)
 	if diags.HasError() {
 		return diags
 	}
@@ -188,7 +196,7 @@ func resourceGmailSendAsAliasUpdate(ctx context.Context, d *schema.ResourceData,
 
 	log.Printf("[DEBUG] Updating Gmail Send As Alias %q", d.Id())
 
-	_, err := sendAsAliasService.Update("me", d.Get("send_as_email").(string), &gmail.SendAs{
+	_, err := sendAsAliasService.Update(primaryEmail, d.Get("send_as_email").(string), &gmail.SendAs{
 		DisplayName:    d.Get("display_name").(string),
 		ReplyToAddress: d.Get("reply_to_address").(string),
 		Signature:      d.Get("signature").(string),
@@ -209,7 +217,7 @@ func resourceGmailSendAsAliasRead(ctx context.Context, d *schema.ResourceData, m
 	client := meta.(*apiClient)
 
 	primaryEmail := d.Get("primary_email").(string)
-	gmailService, diags := client.NewGmailService(ctx, primaryEmail)
+	gmailService, diags := newGmailSendAsAliasService(ctx, client, primaryEmail)
 	if diags.HasError() {
 		return diags
 	}
@@ -223,7 +231,7 @@ func resourceGmailSendAsAliasRead(ctx context.Context, d *schema.ResourceData, m
 
 	var sendAs *gmail.SendAs
 	err := retryNotFound(ctx, func() (e error) {
-		sendAs, e = sendAsAliasService.Get("me", d.Get("send_as_email").(string)).Do()
+		sendAs, e = sendAsAliasService.Get(primaryEmail, d.Get("send_as_email").(string)).Do()
 		return
 	})
 	if err != nil {
@@ -254,7 +262,7 @@ func resourceGmailSendAsAliasDelete(ctx context.Context, d *schema.ResourceData,
 	client := meta.(*apiClient)
 
 	primaryEmail := d.Get("primary_email").(string)
-	gmailService, diags := client.NewGmailService(ctx, primaryEmail)
+	gmailService, diags := newGmailSendAsAliasService(ctx, client, primaryEmail)
 	if diags.HasError() {
 		return diags
 	}
@@ -266,7 +274,7 @@ func resourceGmailSendAsAliasDelete(ctx context.Context, d *schema.ResourceData,
 
 	log.Printf("[DEBUG] Deleting Gmail Send As Alias %q", d.Id())
 
-	err := sendAsAliasService.Delete("me", d.Get("send_as_email").(string)).Do()
+	err := sendAsAliasService.Delete(primaryEmail, d.Get("send_as_email").(string)).Do()
 	if err != nil {
 		return handleNotFoundError(err, d, d.Id())
 	}

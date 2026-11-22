@@ -7,13 +7,20 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"golang.org/x/oauth2"
 	googleoauth "golang.org/x/oauth2/google"
 
 	"google.golang.org/api/iamcredentials/v1"
+	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 )
 
@@ -276,4 +283,205 @@ func checkValidCredsGroupAdmin(config *apiClient) diag.Diagnostics {
 	}
 
 	return diags
+}
+
+// TestNewGmailService_accessTokenServiceAccount verifies that the Gmail
+// service, which impersonates the mailbox owner, keeps the access_token and
+// service_account authentication of the provider. It needs no network access.
+func TestNewGmailService_accessTokenServiceAccount(t *testing.T) {
+	// Make the default credentials fail, so that a client that drops the
+	// access token cannot get a token: no key file, no gcloud credentials, and
+	// a metadata server that fails the test when it is called.
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("metadata server called: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected metadata request", http.StatusInternalServerError)
+	}))
+	defer metadata.Close()
+	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(metadata.URL, "http://"))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLOUDSDK_CONFIG", t.TempDir())
+
+	var got impersonate.CredentialsConfig
+	impersonateCalls := 0
+	previous := impersonateTokenSource
+	t.Cleanup(func() { impersonateTokenSource = previous })
+	impersonateTokenSource = func(_ context.Context, config impersonate.CredentialsConfig, _ ...option.ClientOption) (oauth2.TokenSource, error) {
+		impersonateCalls++
+		got = config
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "impersonated-token"}), nil
+	}
+
+	config := &apiClient{
+		AccessToken:    "fake-access-token",
+		ServiceAccount: "sa@example-project.iam.gserviceaccount.com",
+		Customer:       "C0123abcd",
+	}
+
+	svc, diags := config.NewGmailService(context.Background(), "user@example.com")
+	if err := checkDiags(diags); err != nil {
+		t.Fatalf("unexpected error: %s", err.Error())
+	}
+	if svc == nil {
+		t.Fatal("expected a Gmail service")
+	}
+	if config.ImpersonatedUserEmail != "" {
+		t.Fatalf("provider config was modified: ImpersonatedUserEmail = %q", config.ImpersonatedUserEmail)
+	}
+	if impersonateCalls != 1 {
+		t.Fatalf("access_token impersonation used %d times, want 1", impersonateCalls)
+	}
+	if got.TargetPrincipal != config.ServiceAccount || got.Subject != "user@example.com" {
+		t.Fatalf("impersonation config = %+v, want service account %q and subject %q", got, config.ServiceAccount, "user@example.com")
+	}
+
+	// The Gmail client sends the token of the impersonation.
+	gmailAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer impersonated-token" {
+			t.Errorf("Authorization = %q, want the impersonated token", auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	}))
+	defer gmailAPI.Close()
+	svc.BasePath = gmailAPI.URL + "/"
+	if _, err := svc.Users.Settings.SendAs.List("user@example.com").Do(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+}
+
+// TestNewGmailService_accessTokenWithoutServiceAccount verifies that the error
+// for access_token without service_account says what to change.
+func TestNewGmailService_accessTokenWithoutServiceAccount(t *testing.T) {
+	config := &apiClient{
+		AccessToken: "fake-access-token",
+		Credentials: "{}",
+		Customer:    "C0123abcd",
+	}
+
+	_, diags := config.NewGmailService(context.Background(), "user@example.com")
+	if !diags.HasError() {
+		t.Fatal("expected an error")
+	}
+	detail := diags[0].Detail
+	for _, want := range []string{"user@example.com", "Gmail resources", "service_account", "domain-wide delegation", "Service Account Token Creator", "remove access_token"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("expected %q in the error detail: %s", want, detail)
+		}
+	}
+}
+
+// TestNewGmailService_cachesClientPerUser verifies that the Gmail client of a
+// user is created once and shared by copies of the provider config.
+func TestNewGmailService_cachesClientPerUser(t *testing.T) {
+	var mu sync.Mutex
+	subjects := map[string]int{}
+	var ctxErrs []error
+	previous := impersonateTokenSource
+	t.Cleanup(func() { impersonateTokenSource = previous })
+	impersonateTokenSource = func(ctx context.Context, config impersonate.CredentialsConfig, _ ...option.ClientOption) (oauth2.TokenSource, error) {
+		mu.Lock()
+		subjects[config.Subject]++
+		ctxErrs = append(ctxErrs, ctx.Err())
+		mu.Unlock()
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "impersonated-token"}), nil
+	}
+
+	config := &apiClient{
+		gmailClients:   &gmailClientCache{},
+		AccessToken:    "fake-access-token",
+		ServiceAccount: "sa@example-project.iam.gserviceaccount.com",
+		Customer:       "C0123abcd",
+	}
+	configCopy := *config
+
+	// The client must keep working after the context of the first call ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var wg sync.WaitGroup
+	for _, c := range []*apiClient{config, &configCopy} {
+		for _, user := range []string{"user@example.com", "User@Example.com", "other@example.com"} {
+			wg.Add(1)
+			go func(c *apiClient, user string) {
+				defer wg.Done()
+				if _, diags := c.NewGmailService(ctx, user); diags.HasError() {
+					t.Errorf("unexpected error: %v", diags)
+				}
+			}(c, user)
+		}
+	}
+	wg.Wait()
+
+	if len(subjects) != 2 || subjects["other@example.com"] != 1 || subjects["user@example.com"]+subjects["User@Example.com"] != 1 {
+		t.Fatalf("impersonated subjects = %v, want one client for each user", subjects)
+	}
+	for _, err := range ctxErrs {
+		if err != nil {
+			t.Fatalf("cached client was created with a canceled context: %v", err)
+		}
+	}
+}
+
+// TestNewGmailService_createsClientsOfUsersConcurrently verifies that the
+// creation of one user's client does not block the creation for another user.
+func TestNewGmailService_createsClientsOfUsersConcurrently(t *testing.T) {
+	slowStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	var mu sync.Mutex
+	subjects := map[string]int{}
+	previous := impersonateTokenSource
+	t.Cleanup(func() { impersonateTokenSource = previous })
+	impersonateTokenSource = func(_ context.Context, config impersonate.CredentialsConfig, _ ...option.ClientOption) (oauth2.TokenSource, error) {
+		mu.Lock()
+		subjects[config.Subject]++
+		mu.Unlock()
+		if config.Subject == "slow@example.com" {
+			close(slowStarted)
+			<-releaseSlow
+		}
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "impersonated-token"}), nil
+	}
+
+	config := &apiClient{
+		gmailClients:   &gmailClientCache{},
+		AccessToken:    "fake-access-token",
+		ServiceAccount: "sa@example-project.iam.gserviceaccount.com",
+		Customer:       "C0123abcd",
+	}
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, diags := config.NewGmailService(ctx, "slow@example.com"); diags.HasError() {
+				t.Errorf("unexpected error: %v", diags)
+			}
+		}()
+	}
+	<-slowStarted
+
+	fastDone := make(chan diag.Diagnostics, 1)
+	go func() {
+		_, diags := config.NewGmailService(ctx, "fast@example.com")
+		fastDone <- diags
+	}()
+	select {
+	case diags := <-fastDone:
+		if diags.HasError() {
+			t.Errorf("unexpected error: %v", diags)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("client creation for another user waited for the slow user")
+	}
+	close(releaseSlow)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if subjects["slow@example.com"] != 1 || subjects["fast@example.com"] != 1 {
+		t.Fatalf("impersonated subjects = %v, want one client for each user", subjects)
+	}
 }

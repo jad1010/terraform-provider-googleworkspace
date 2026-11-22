@@ -1,11 +1,20 @@
 ## 0.13.0 (Unreleased)
 
+NOTES:
+
+* gmail: `googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` now use `access_token` when it is set, as the documented precedence says. Before, the Gmail client ignored `access_token`, so a configuration with `access_token` and `credentials` (or application default credentials that can use domain-wide delegation) but no `service_account` worked for Gmail resources. Such a configuration now fails with "service_account is required to impersonate a user with the access_token authentication". Set `service_account` to a service account that has domain-wide delegation, and grant the principal of `access_token` the Service Account Token Creator role on it, or remove `access_token`.
+
 SECURITY:
 
 * build: release binaries are built with Go 1.27.4. `go.mod` now sets `toolchain go1.27.4`, and the release workflow reads it. Earlier releases were built with Go 1.25.0 and carried known standard library vulnerabilities.
 * deps: updated all Go module dependencies, including `golang.org/x/net`, `golang.org/x/crypto`, `google.golang.org/grpc` and `github.com/hashicorp/terraform-plugin-sdk/v2` (2.33.0 to 2.41.1). The provider schema is unchanged. Building the provider now requires Go 1.26 or later, because the updated dependencies require it.
 * ci: new `govulncheck` workflow on push, pull request, and weekly. Dependabot groups Go module updates.
 * provider: debug logs (`TF_LOG=DEBUG` or higher) no longer show passwords or other secrets. Request and response bodies were scrubbed only for a top-level `accessToken`, so the `password` of `googleworkspace_user` and the SMTP password of `googleworkspace_gmail_send_as_alias` were written to the log in plain text. These JSON keys are now scrubbed at any depth, with a key match that is not case-sensitive: `password`, `newPassword`, `recoveryEmail`, `recoveryPhone`, `verificationCode`, `verificationCodes`, `accessToken`, `access_token`, `refresh_token`, `id_token`, `client_secret`, `private_key` and `privateKey`. The values of the `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Goog-Api-Key` and `X-Goog-Iam-Authorization-Token` headers are scrubbed too. Bodies are read directly instead of from the wire dump, so chunked HTTP/1.1 responses and HTTP/2 responses are scrubbed. A body that is not exactly one JSON value (for example a multipart body) keeps its text, but the string value of each scrubbed key is replaced. A JSON body is logged indented with sorted keys, and numbers and HTML characters are kept as they are. A logging failure no longer makes the API call fail: a warning is logged and the body is left out of the debug log.
+
+BUG FIXES:
+
+* gmail: `googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate` now work with `access_token` and `service_account` authentication instead of failing with "Error 400: Precondition check failed" ([#39](https://github.com/SamuZad/terraform-provider-googleworkspace/issues/39))
+* gmail: `googleworkspace_gmail_send_as_alias` now sends the mailbox owner's address (`primary_email`) as the Gmail user ID instead of `me`. With credentials that cannot impersonate a user, such as `gcloud` user application default credentials, the old read, update and delete calls acted on the send-as aliases of the caller's own mailbox (create already failed with such credentials); they now fail with a delegation error
 
 ## 0.8.0 (Unreleased)
 

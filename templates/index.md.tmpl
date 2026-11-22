@@ -85,6 +85,16 @@ provider "googleworkspace" {
 }
 ```
 
+Gmail resources (`googleworkspace_gmail_send_as_alias` and `googleworkspace_user_delegate`) always impersonate the mailbox owner. With `access_token`, they need `service_account`: the principal of the access token must have the `Service Account Token Creator` role on that service account, and the service account must have [domain-wide delegation](#using-domain-wide-delegation) for the Gmail scopes.
+
+```terraform
+provider "googleworkspace" {
+  customer_id     = "A01b123xz"
+  access_token    = data.google_service_account_access_token.default.access_token
+  service_account = "terraform@my-project.iam.gserviceaccount.com"
+}
+```
+
 You can also provide an exported service account key in the `credentials` parameter without specifying an `impersonated_user_email`.
 
 {{ .SchemaMarkdown | trimspace }}

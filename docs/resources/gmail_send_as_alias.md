@@ -42,7 +42,7 @@ resource "googleworkspace_gmail_send_as_alias" "test" {
 
 ### Required
 
-- `primary_email` (String) User's primary email address.
+- `primary_email` (String) User's primary email address. This must be the primary address of the mailbox, not an alias: it is the Gmail user ID of each request and the user that the provider impersonates, and Gmail may reject an alias as a user ID.
 - `send_as_email` (String) The email address that appears in the 'From:' header for mail sent using this alias.
 
 ### Optional

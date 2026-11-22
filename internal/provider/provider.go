@@ -110,7 +110,10 @@ func New(version string) func() *schema.Provider {
 				"service_account": {
 					Description: "The service account used to create the provided `access_token` if authenticating using " +
 						"the `access_token` method and needing to impersonate a user. This service account will require the " +
-						"GCP role `Service Account Token Creator` if needing to impersonate a user.",
+						"GCP role `Service Account Token Creator` if needing to impersonate a user. Gmail resources " +
+						"(`googleworkspace_gmail_send_as_alias`, `googleworkspace_user_delegate`) always impersonate the " +
+						"mailbox owner, so with `access_token` they need `service_account`, the `Service Account Token Creator` " +
+						"role for the `access_token` principal on it, and domain-wide delegation for it.",
 					Type:     schema.TypeString,
 					Optional: true,
 				},
@@ -160,7 +163,7 @@ func New(version string) func() *schema.Provider {
 func configure(version string, p *schema.Provider) func(context.Context, *schema.ResourceData) (interface{}, diag.Diagnostics) {
 	return func(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
 		var diags diag.Diagnostics
-		config := apiClient{}
+		config := apiClient{gmailClients: &gmailClientCache{}}
 
 		// Get access token
 		if v, ok := d.GetOk("access_token"); ok {

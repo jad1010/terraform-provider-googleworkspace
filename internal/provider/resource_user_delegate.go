@@ -12,6 +12,12 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
+// newGmailUserDelegateService creates the Gmail service that impersonates the
+// mailbox owner. Unit tests replace it to send the requests to a fake Gmail API.
+var newGmailUserDelegateService = func(ctx context.Context, client *apiClient, userId string) (*gmail.Service, diag.Diagnostics) {
+	return client.NewGmailService(ctx, userId)
+}
+
 func resourceUserDelegate() *schema.Resource {
 	return &schema.Resource{
 		Description: "User Delegate resource manages delagation of access to a Gmail user mailbox. User Delegate resides under the " +
@@ -61,7 +67,7 @@ func resourceUserDelegateCreate(ctx context.Context, d *schema.ResourceData, met
 	client := meta.(*apiClient)
 
 	userId := d.Get("user_id").(string)
-	gmailService, diags := client.NewGmailService(ctx, userId)
+	gmailService, diags := newGmailUserDelegateService(ctx, client, userId)
 	if diags.HasError() {
 		return diags
 	}
@@ -95,7 +101,7 @@ func resourceUserDelegateRead(ctx context.Context, d *schema.ResourceData, meta 
 	userId := d.Get("user_id").(string)
 	delegateEmail := d.Get("delegate_email").(string)
 
-	gmailService, diags := client.NewGmailService(ctx, userId)
+	gmailService, diags := newGmailUserDelegateService(ctx, client, userId)
 	if diags.HasError() {
 		return diags
 	}
@@ -132,7 +138,7 @@ func resourceUserDelegateDelete(ctx context.Context, d *schema.ResourceData, met
 	userId := d.Get("user_id").(string)
 	delegateEmail := d.Get("delegate_email").(string)
 
-	gmailService, diags := client.NewGmailService(ctx, userId)
+	gmailService, diags := newGmailUserDelegateService(ctx, client, userId)
 	if diags.HasError() {
 		return diags
 	}
