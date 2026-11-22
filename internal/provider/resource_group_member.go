@@ -22,9 +22,14 @@ func resourceGroupMember() *schema.Resource {
 	return &schema.Resource{
 		// This description is used by the documentation generator and the language server.
 		Description: "Group Member resource manages Google Workspace Groups Members. Group Member resides under the " +
-			"`https://www.googleapis.com/auth/admin.directory.group` client scope.",
+			"`https://www.googleapis.com/auth/admin.directory.group` client scope. If the member already exists in the " +
+			"group, the resource adopts it, sets its role and delivery settings, and gives a warning; destroying the " +
+			"resource then removes that member. Two resources that declare the same member both succeed and both manage " +
+			"it. With `create_before_destroy`, a change of `email` to another address of the same member (an alias) " +
+			"adopts the member and then destroys it with the old resource; avoid that combination.",
 
 		CreateContext: resourceGroupMemberCreate,
+		CustomizeDiff: forceNewIfOtherGroup,
 		ReadContext:   resourceGroupMemberRead,
 		UpdateContext: resourceGroupMemberUpdate,
 		DeleteContext: resourceGroupMemberDelete,
@@ -41,17 +46,27 @@ func resourceGroupMember() *schema.Resource {
 		Schema: map[string]*schema.Schema{
 			"group_id": {
 				Description: "Identifies the group in the API request. The value can be the group's email address, " +
-					"group alias, or the unique group ID.",
+					"group alias, or the unique group ID." + groupIDNote,
 				Type:     schema.TypeString,
 				Required: true,
+				// A member cannot move to another group: Update would address
+				// the member in the new group, where it does not exist. So
+				// forceNewIfOtherGroup replaces the resource when the new value
+				// names another group. A group email or alias can differ in
+				// case only.
+				DiffSuppressFunc: emailDiffSuppress,
 			},
 			"email": {
 				Description: "The member's email address. A member can be a user or another group. This property is " +
 					"required when adding a member to a group. The email must be unique and cannot be an alias of " +
-					"another group. If the email address is changed, the API automatically reflects the email address changes.",
+					"another group. If the email address is changed, the API automatically reflects the email address changes." +
+					caseInsensitiveNote,
 				Type:     schema.TypeString,
 				ForceNew: true,
 				Required: true,
+				// The API stores email addresses in lower case. A change of
+				// case only must not replace the member.
+				DiffSuppressFunc: emailDiffSuppress,
 			},
 			"role": {
 				Description: "The member's role in a group. The API returns an error for cycles in group memberships. " +
@@ -149,46 +164,43 @@ func resourceGroupMemberCreate(ctx context.Context, d *schema.ResourceData, meta
 		DeliverySettings: d.Get("delivery_settings").(string),
 	}
 
-	member, err := membersService.Insert(groupId, &memberObj).Do()
-
+	// insertGroupMember gets the member by email when Insert returns an
+	// empty member ID (the API sometimes does), and adopts a member that
+	// already exists (409), with the configured role and delivery settings.
+	member, adoption, err := insertGroupMember(ctx, membersService, groupId, &memberObj)
 	if err != nil {
 		return diag.FromErr(err)
 	}
-
-	// This might seem redundant (and it is) but the API will sometimes return an empty member ID, which breaks things
-	// If Insert returns an empty member ID, fetch by email to get the ID
-	if member.Id == "" {
-		member, err = membersService.Get(groupId, email).Do()
-		if err != nil {
-			return diag.FromErr(err)
-		}
-	}
+	diags = append(diags, adoption...)
 
 	d.Set("member_id", member.Id)
-	d.SetId(fmt.Sprintf("groups/%s/members/%s", groupId, member.Id))
+	id := fmt.Sprintf("groups/%s/members/%s", groupId, member.Id)
+	d.SetId(id)
 
 	// INSERT will respond with the Group Member that will be created, however, it is eventually consistent
 	// After INSERT, the etag is updated along with the Group Member,
 	// once we get a consistent etag, we can feel confident that our Group Member is also consistent
+	// The wait leaves part of the create timeout for Read, so that the
+	// inserted member is always saved to state.
 	cc := consistencyCheck{
 		resourceType: "group_member",
 		timeout:      d.Timeout(schema.TimeoutCreate),
 	}
-	err = retryTimeDuration(ctx, d.Timeout(schema.TimeoutCreate), func() error {
+	err = retryTimeDuration(ctx, consistencyWaitBudget(ctx, d.Timeout(schema.TimeoutCreate)), func() error {
 		var retryErr error
 
 		if cc.reachedConsistency(1) {
 			return nil
 		}
 
-		newMember, retryErr := membersService.Get(groupId, member.Id).IfNoneMatch(cc.lastEtag).Do()
+		newMember, retryErr := membersService.Get(groupId, member.Id).IfNoneMatch(cc.lastEtag).Context(ctx).Do()
 		if googleapi.IsNotModified(retryErr) {
 			cc.currConsistent += 1
 		} else if isNotFound(retryErr) {
 			// groupmember was not found yet therefore setting currConsistent back to null value
 			cc.currConsistent = 0
 		} else if retryErr != nil {
-			return fmt.Errorf("unexpected error during retries of %s: %s", cc.resourceType, retryErr)
+			return fmt.Errorf("unexpected error during retries of %s: %w", cc.resourceType, retryErr)
 		} else {
 			cc.handleNewEtag(newMember.Etag)
 		}
@@ -196,16 +208,47 @@ func resourceGroupMemberCreate(ctx context.Context, d *schema.ResourceData, meta
 		return fmt.Errorf("timed out while waiting for %s to be inserted", cc.resourceType)
 	})
 
-	if err != nil {
-		return diag.FromErr(err)
+	// The member was inserted. A consistency timeout must not lose it from
+	// state, so it gives a warning and Read records what the API shows now.
+	// Another error saves no state (no ID), so that the resource is not
+	// tainted and destroyed; the next apply adopts the member (409).
+	if isConsistencyTimeout(ctx, err) {
+		log.Printf("[WARN] %s", err)
+		diags = append(diags, consistencyWarning("googleworkspace_group_member", err))
+	} else if err != nil {
+		d.SetId("")
+		return append(diags, diag.FromErr(err)...)
 	}
 
 	log.Printf("[DEBUG] Finished creating Group Member %q: %#v", member.Id, email)
 
-	return resourceGroupMemberRead(ctx, d, meta)
+	readDiags := resourceGroupMemberRead(ctx, d, meta)
+	diags = append(diags, readDiags...)
+	if readDiags.HasError() {
+		d.SetId("")
+		return diags
+	}
+	if d.Id() == "" {
+		// Read removes the resource on a 404. The member was inserted, so
+		// keep it in state; the next refresh reads it again.
+		d.SetId(id)
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Warning,
+			Summary:  "googleworkspace_group_member is not yet readable",
+			Detail:   fmt.Sprintf("Member %s was inserted in group %s, but the API did not return it yet.", email, groupId),
+		})
+	}
+	return diags
 }
 
 func resourceGroupMemberRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	return readGroupMember(ctx, d, meta, true)
+}
+
+// readGroupMember reads the member into d. With keepEmailSpelling, an email
+// that differs from the API's only in case is not changed; the resource uses
+// this, and the data source returns the API's spelling.
+func readGroupMember(ctx context.Context, d *schema.ResourceData, meta interface{}, keepEmailSpelling bool) diag.Diagnostics {
 	var diags diag.Diagnostics
 
 	// use the meta value to retrieve your client from the provider configure method
@@ -226,14 +269,18 @@ func resourceGroupMemberRead(ctx context.Context, d *schema.ResourceData, meta i
 
 	var member *directory.Member
 	err := retryNotFound(ctx, func() (e error) {
-		member, e = membersService.Get(groupId, memberId).Do()
+		member, e = membersService.Get(groupId, memberId).Context(ctx).Do()
 		return
 	})
 	if err != nil {
 		return handleNotFoundError(err, d, d.Id())
 	}
 
-	d.Set("email", member.Email)
+	// The API returns the email in lower case. Keep the spelling from the
+	// configuration or state when it differs only in case.
+	if !keepEmailSpelling || !strings.EqualFold(d.Get("email").(string), member.Email) {
+		d.Set("email", member.Email)
+	}
 	d.Set("role", member.Role)
 	d.Set("etag", member.Etag)
 	d.Set("type", member.Type)
@@ -284,11 +331,13 @@ func resourceGroupMemberUpdate(ctx context.Context, d *schema.ResourceData, meta
 		memberObj.DeliverySettings = d.Get("delivery_settings").(string)
 	}
 
-	if &memberObj != new(directory.Member) {
+	if d.HasChanges("email", "role", "type", "delivery_settings") {
 		groupId := d.Get("group_id").(string)
 		memberId := d.Get("member_id").(string)
-		member, err := membersService.Update(groupId, memberId, &memberObj).Do()
+		member, err := membersService.Update(groupId, memberId, &memberObj).Context(ctx).Do()
 		if err != nil {
+			// Keep the prior state: the update did not happen.
+			d.Partial(true)
 			return diag.FromErr(err)
 		}
 
@@ -301,18 +350,21 @@ func resourceGroupMemberUpdate(ctx context.Context, d *schema.ResourceData, meta
 			resourceType: "group_member",
 			timeout:      d.Timeout(schema.TimeoutUpdate),
 		}
-		err = retryTimeDuration(ctx, d.Timeout(schema.TimeoutUpdate), func() error {
+		err = retryTimeDuration(ctx, consistencyWaitBudget(ctx, d.Timeout(schema.TimeoutUpdate)), func() error {
 			var retryErr error
 
 			if cc.reachedConsistency(1) {
 				return nil
 			}
 
-			newMember, retryErr := membersService.Get(groupId, member.Id).IfNoneMatch(cc.lastEtag).Do()
+			newMember, retryErr := membersService.Get(groupId, member.Id).IfNoneMatch(cc.lastEtag).Context(ctx).Do()
 			if googleapi.IsNotModified(retryErr) {
 				cc.currConsistent += 1
+			} else if isNotFound(retryErr) {
+				// a transient 404 right after the update; keep waiting
+				cc.currConsistent = 0
 			} else if retryErr != nil {
-				return fmt.Errorf("unexpected error during retries of %s: %s", cc.resourceType, retryErr)
+				return fmt.Errorf("unexpected error during retries of %s: %w", cc.resourceType, retryErr)
 			} else {
 				cc.handleNewEtag(newMember.Etag)
 			}
@@ -320,14 +372,18 @@ func resourceGroupMemberUpdate(ctx context.Context, d *schema.ResourceData, meta
 			return fmt.Errorf("timed out while waiting for %s to be updated", cc.resourceType)
 		})
 
-		if err != nil {
+		// The update succeeded. A consistency timeout gives a warning.
+		if isConsistencyTimeout(ctx, err) {
+			log.Printf("[WARN] %s", err)
+			diags = append(diags, consistencyWarning("googleworkspace_group_member", err))
+		} else if err != nil {
 			return diag.FromErr(err)
 		}
 	}
 
 	log.Printf("[DEBUG] Finished creating Group Member %q: %#v", memberId, email)
 
-	return resourceGroupMemberRead(ctx, d, meta)
+	return append(diags, resourceGroupMemberRead(ctx, d, meta)...)
 }
 
 func resourceGroupMemberDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -351,7 +407,7 @@ func resourceGroupMemberDelete(ctx context.Context, d *schema.ResourceData, meta
 		return diags
 	}
 
-	err := membersService.Delete(groupId, memberId).Do()
+	err := membersService.Delete(groupId, memberId).Context(ctx).Do()
 	if err != nil {
 		return handleNotFoundError(err, d, d.Id())
 	}

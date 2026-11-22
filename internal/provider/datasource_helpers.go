@@ -4,6 +4,8 @@
 package googleworkspace
 
 import (
+	"strings"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
@@ -17,10 +19,11 @@ func datasourceSchemaFromResourceSchema(rs map[string]*schema.Schema) map[string
 	ds := make(map[string]*schema.Schema, len(rs))
 	for k, v := range rs {
 		dv := &schema.Schema{
-			Computed:    true,
-			ForceNew:    false,
-			Required:    false,
-			Description: v.Description,
+			Computed: true,
+			ForceNew: false,
+			Required: false,
+			// A data source has no diff, so notes about diffs do not apply.
+			Description: strings.TrimSuffix(strings.TrimSuffix(v.Description, groupIDNote), caseInsensitiveNote),
 			Type:        v.Type,
 		}
 

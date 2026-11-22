@@ -3,12 +3,12 @@
 page_title: "googleworkspace_group_members Resource - terraform-provider-googleworkspace"
 subcategory: ""
 description: |-
-  Group Members resource manages Google Workspace Groups Members. Group Members resides under the https://www.googleapis.com/auth/admin.directory.group client scope.
+  Group Members resource manages Google Workspace Groups Members. Group Members resides under the https://www.googleapis.com/auth/admin.directory.group client scope. After a create or update, the resource waits up to 5 minutes for the API to list the members that it wrote. If the wait ends first, the resource gives a warning and records the membership that the API lists. If a declared member already exists in the group, the resource adopts it, sets its role and delivery settings, and gives a warning. The resource is authoritative: Read records every listed member, so destroying or replacing the resource removes all members of the group, also members that the configuration does not declare. Two resources that declare the same member both succeed and both manage it.
 ---
 
 # googleworkspace_group_members (Resource)
 
-Group Members resource manages Google Workspace Groups Members. Group Members resides under the `https://www.googleapis.com/auth/admin.directory.group` client scope.
+Group Members resource manages Google Workspace Groups Members. Group Members resides under the `https://www.googleapis.com/auth/admin.directory.group` client scope. After a create or update, the resource waits up to 5 minutes for the API to list the members that it wrote. If the wait ends first, the resource gives a warning and records the membership that the API lists. If a declared member already exists in the group, the resource adopts it, sets its role and delivery settings, and gives a warning. The resource is authoritative: Read records every listed member, so destroying or replacing the resource removes all members of the group, also members that the configuration does not declare. Two resources that declare the same member both succeed and both manage it.
 
 ## Example Usage
 
@@ -62,7 +62,7 @@ resource "googleworkspace_group_members" "sales" {
 
 ### Required
 
-- `group_id` (String) Identifies the group in the API request. The value can be the group's email address, group alias, or the unique group ID.
+- `group_id` (String) Identifies the group in the API request. The value can be the group's email address, group alias, or the unique group ID. A change replaces the resource only when the new value names another group. The value is compared without regard to case.
 
 ### Optional
 
@@ -78,7 +78,7 @@ resource "googleworkspace_group_members" "sales" {
 
 Required:
 
-- `email` (String) The member's email address. A member can be a user or another group. This property isrequired when adding a member to a group. The email must be unique and cannot be an alias of another group. If the email address is changed, the API automatically reflects the email address changes.
+- `email` (String) The member's email address. A member can be a user or another group. This property isrequired when adding a member to a group. The email must be unique and cannot be an alias of another group. If the email address is changed, the API automatically reflects the email address changes. The value is compared without regard to case.
 
 Optional:
 

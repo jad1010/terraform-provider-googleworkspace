@@ -95,6 +95,51 @@ func TestAccResourceGroupMember_full(t *testing.T) {
 	})
 }
 
+// The API stores email addresses in lower case. A configuration with a
+// mixed-case email must not show a permanent diff or replace the member.
+func TestAccResourceGroupMember_mixedCaseEmail(t *testing.T) {
+	t.Parallel()
+
+	domainName := os.Getenv("GOOGLEWORKSPACE_DOMAIN")
+
+	if domainName == "" {
+		t.Skip("GOOGLEWORKSPACE_DOMAIN needs to be set to run this test")
+	}
+
+	testGroupVals := map[string]interface{}{
+		"domainName": domainName,
+		"userEmail":  fmt.Sprintf("tf-test-%s", acctest.RandString(10)),
+		"groupEmail": fmt.Sprintf("tf-test-%s", acctest.RandString(10)),
+		"password":   acctest.RandString(10),
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: providerFactories,
+		CheckDestroy: resource.ComposeTestCheckFunc(
+			testAccResourceGroupMemberExists("googleworkspace_group_member.my-group-member"),
+		),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceGroupMember_mixedCaseEmail(testGroupVals, "MEMBER"),
+				Check: resource.TestCheckResourceAttr("googleworkspace_group_member.my-group-member", "email",
+					strings.ToUpper(fmt.Sprintf("%s@%s", testGroupVals["userEmail"], domainName))),
+			},
+			{
+				Config: testAccResourceGroupMember_mixedCaseEmail(testGroupVals, "OWNER"),
+				Check:  resource.TestCheckResourceAttr("googleworkspace_group_member.my-group-member", "role", "OWNER"),
+			},
+			{
+				ResourceName:      "googleworkspace_group_member.my-group-member",
+				ImportState:       true,
+				ImportStateVerify: true,
+				// Import reads the email in lower case.
+				ImportStateVerifyIgnore: []string{"etag", "email"},
+			},
+		},
+	})
+}
+
 func testAccResourceGroupMemberExists(resource string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, ok := s.RootModule().Resources[resource]
@@ -208,4 +253,33 @@ resource "googleworkspace_group_member" "my-group-member" {
   delivery_settings = "DAILY"
 }
 `, testGroupVals)
+}
+
+func testAccResourceGroupMember_mixedCaseEmail(testGroupVals map[string]interface{}, role string) string {
+	vals := map[string]interface{}{"role": role}
+	for k, v := range testGroupVals {
+		vals[k] = v
+	}
+
+	return Nprintf(`
+resource "googleworkspace_group" "my-group" {
+  email = "%{groupEmail}@%{domainName}"
+}
+
+resource "googleworkspace_user" "my-new-user" {
+  primary_email = "%{userEmail}@%{domainName}"
+  password = "%{password}"
+
+  name {
+    family_name = "Scott"
+    given_name = "Michael"
+  }
+}
+
+resource "googleworkspace_group_member" "my-group-member" {
+  group_id = googleworkspace_group.my-group.id
+  email = upper(googleworkspace_user.my-new-user.primary_email)
+  role = "%{role}"
+}
+`, vals)
 }

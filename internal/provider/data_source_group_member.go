@@ -49,7 +49,7 @@ func dataSourceGroupMemberRead(ctx context.Context, d *schema.ResourceData, meta
 		}
 
 		groupId := d.Get("group_id").(string)
-		member, err := membersService.Get(groupId, d.Get("email").(string)).Do()
+		member, err := membersService.Get(groupId, d.Get("email").(string)).Context(ctx).Do()
 		if err != nil {
 			return diag.FromErr(err)
 		}
@@ -67,5 +67,5 @@ func dataSourceGroupMemberRead(ctx context.Context, d *schema.ResourceData, meta
 		d.SetId(fmt.Sprintf("groups/%s/members/%s", groupId, member.Id))
 	}
 
-	return resourceGroupMemberRead(ctx, d, meta)
+	return readGroupMember(ctx, d, meta, false)
 }

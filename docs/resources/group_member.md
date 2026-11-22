@@ -3,12 +3,12 @@
 page_title: "googleworkspace_group_member Resource - terraform-provider-googleworkspace"
 subcategory: ""
 description: |-
-  Group Member resource manages Google Workspace Groups Members. Group Member resides under the https://www.googleapis.com/auth/admin.directory.group client scope.
+  Group Member resource manages Google Workspace Groups Members. Group Member resides under the https://www.googleapis.com/auth/admin.directory.group client scope. If the member already exists in the group, the resource adopts it, sets its role and delivery settings, and gives a warning; destroying the resource then removes that member. Two resources that declare the same member both succeed and both manage it. With create_before_destroy, a change of email to another address of the same member (an alias) adopts the member and then destroys it with the old resource; avoid that combination.
 ---
 
 # googleworkspace_group_member (Resource)
 
-Group Member resource manages Google Workspace Groups Members. Group Member resides under the `https://www.googleapis.com/auth/admin.directory.group` client scope.
+Group Member resource manages Google Workspace Groups Members. Group Member resides under the `https://www.googleapis.com/auth/admin.directory.group` client scope. If the member already exists in the group, the resource adopts it, sets its role and delivery settings, and gives a warning; destroying the resource then removes that member. Two resources that declare the same member both succeed and both manage it. With `create_before_destroy`, a change of `email` to another address of the same member (an alias) adopts the member and then destroys it with the old resource; avoid that combination.
 
 ## Example Usage
 
@@ -44,8 +44,8 @@ resource "googleworkspace_group_member" "manager" {
 
 ### Required
 
-- `email` (String) The member's email address. A member can be a user or another group. This property is required when adding a member to a group. The email must be unique and cannot be an alias of another group. If the email address is changed, the API automatically reflects the email address changes.
-- `group_id` (String) Identifies the group in the API request. The value can be the group's email address, group alias, or the unique group ID.
+- `email` (String) The member's email address. A member can be a user or another group. This property is required when adding a member to a group. The email must be unique and cannot be an alias of another group. If the email address is changed, the API automatically reflects the email address changes. The value is compared without regard to case.
+- `group_id` (String) Identifies the group in the API request. The value can be the group's email address, group alias, or the unique group ID. A change replaces the resource only when the new value names another group. The value is compared without regard to case.
 
 ### Optional
 
