@@ -23,7 +23,8 @@ import (
 // case-sensitive. "password" covers Directory API users (password) and Gmail
 // send-as aliases (smtpMsa.password). The recovery email and phone of a user
 // are account recovery factors. Verification codes are backup codes for
-// 2-Step Verification.
+// 2-Step Verification. "passphrase", "psk" and "preSharedKey" cover Chrome
+// network policy values, such as a Wi-Fi passphrase.
 func getValuesToScrub() []string {
 	return []string{
 		"accessToken",
@@ -39,6 +40,9 @@ func getValuesToScrub() []string {
 		"recoveryPhone",
 		"verificationCode",
 		"verificationCodes",
+		"passphrase",
+		"psk",
+		"preSharedKey",
 	}
 }
 

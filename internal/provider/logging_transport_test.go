@@ -33,6 +33,8 @@ func TestScrubBody_scrubsSecrets(t *testing.T) {
 		"new password":        `{"newPassword":"SuperSecret1"}`,
 		"private keys":        `{"private_key":"SuperSecret1","privateKey":"SuperSecret1"}`,
 		"verification codes":  `{"items":[{"verificationCode":"SuperSecret1"}],"verificationCodes":["SuperSecret1"]}`,
+		"chrome network keys": `{"passphrase":"SuperSecret1","psk":"SuperSecret1","preSharedKey":"SuperSecret1","PSK":"SuperSecret1"}`,
+		"chrome policy value": `{"requests":[{"policyTargetKey":{"targetResource":"orgunits/abc"},"policyValue":{"policySchema":"chrome.networks.wifi.Details","value":{"ssid":"office","passphrase":"SuperSecret1"}},"updateMask":"passphrase"}]}`,
 	}
 
 	for name, body := range cases {
@@ -61,6 +63,7 @@ func TestScrubBody_scrubsBodyThatIsNotOneJsonValue(t *testing.T) {
 		"object":        `{"name":"keep","privateKey":{"pem":"SuperSecret1","n":{"x":"SuperSecret1"}}} trailing`,
 		"cut off":       `{"name":"keep","password":"abcSuperSecret1`,
 		"cut off array": `{"name":"keep","password":["SuperSecret1"`,
+		"chrome policy": `{"name":"keep","value":{"passphrase":"SuperSecret1","psk":"SuperSecret1"`,
 	}
 
 	for name, body := range cases {
