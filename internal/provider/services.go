@@ -153,6 +153,23 @@ func GetGmailUsersSettingsDelegatesService(gmailService *gmail.Service) (*gmail.
 	return usersService.Settings.Delegates, diags
 }
 
+func GetGmailUsersSettingsService(gmailService *gmail.Service) (*gmail.UsersSettingsService, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	log.Printf("[INFO] Instantiating Google Admin Gmail Users Settings service")
+	usersService := gmailService.Users
+	if usersService == nil || usersService.Settings == nil {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Error,
+			Summary:  "Users Settings Service could not be created.",
+		})
+
+		return nil, diags
+	}
+
+	return usersService.Settings, diags
+}
+
 func GetGroupAliasService(groupsService *directory.GroupsService) (*directory.GroupsAliasesService, diag.Diagnostics) {
 	var diags diag.Diagnostics
 

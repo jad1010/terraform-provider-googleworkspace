@@ -20,6 +20,8 @@ NOTES:
 * licensing: if a refresh of `googleworkspace_license_assignment` finds that the user was renamed, it reports a warning with the user's current primary email address, to set in `user_id`.
 * licensing: if the Directory API refuses a user lookup (a `403` error, or no answer within 15 seconds), the optional user lookups of `googleworkspace_license_assignment` (to store `directory_user_id`, and for a refresh without it) are skipped for the rest of the provider configuration. A delete or a SKU change with `directory_user_id` set still looks up the user and fails if the lookup fails.
 * licensing: the License Manager API documents `customerId` as the unique customer ID. If the provider's `customer_id` is `my_customer`, the license resources get the unique customer ID from the Directory API (`customers.get`) once and cache it.
+* gmail: `googleworkspace_gmail_user_settings` cannot delete Gmail settings. A destroy only removes the resource from the state and does not revert the IMAP, POP or automatic forwarding settings of the mailbox.
+* gmail: automatic forwarding in `googleworkspace_gmail_user_settings` needs the `https://www.googleapis.com/auth/gmail.settings.sharing` scope (in the default scopes) with domain-wide delegation, and a forwarding address of the mailbox that already has the verification status `accepted`. Create the forwarding address outside Terraform; addresses in the same domain may not require verification. `enabled = false` turns off the automatic forwarding setting of one mailbox only: it is not the admin setting that controls whether users can forward mail, and it does not stop forwarding by Gmail filters.
 
 SECURITY:
 
@@ -33,6 +35,7 @@ FEATURES:
 * directory: added the write-only `password_wo` argument and the `password_wo_version` argument to `googleworkspace_user`. Terraform does not store `password_wo` in the plan or the state. Change `password_wo_version` to set a new password. `password_wo` conflicts with `password`, and `hash_function` applies to both. `password_wo_version` must be 1 or greater. To set a new hashed password, change `password_wo` and increment `password_wo_version`: a change to `hash_function` alone sends no password. A switch from `password` to `password_wo` sets the password through the API once, even if the value is the same. Google Workspace handles this as a password change, which can have side effects, for example on the sessions of the user. Write-only arguments require Terraform 1.11 or later
 * **New Resource:** `googleworkspace_license_assignment` ([#476](https://github.com/hashicorp/terraform-provider-googleworkspace/issues/476))
 * **New Datasource:** `googleworkspace_license_assignments` ([#476](https://github.com/hashicorp/terraform-provider-googleworkspace/issues/476))
+* **New Resource:** `googleworkspace_gmail_user_settings`
 
 IMPROVEMENTS:
 

@@ -141,6 +141,7 @@ func New(version string) func() *schema.Provider {
 				"googleworkspace_domain":              resourceDomain(),
 				"googleworkspace_domain_alias":        resourceDomainAlias(),
 				"googleworkspace_gmail_send_as_alias": resourceGmailSendAsAlias(),
+				"googleworkspace_gmail_user_settings": resourceGmailUserSettings(),
 				"googleworkspace_group":               resourceGroup(),
 				"googleworkspace_group_member":        resourceGroupMember(),
 				"googleworkspace_group_members":       resourceGroupMembers(),
