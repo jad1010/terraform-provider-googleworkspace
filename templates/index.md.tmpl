@@ -226,7 +226,7 @@ When `user_project` is set:
   requests. In the keyless setup, the client library also sends it on the IAM Credentials `signJwt` request and on
   the request to the OAuth 2.0 token endpoint (`oauth2.googleapis.com/token`).
 * Each API that the provider calls must be enabled in the quota project: for example the Admin SDK API, the Groups
-  Settings API, the Gmail API, the Chrome Policy API, the Cloud Identity API, and
+  Settings API, the Enterprise License Manager API, the Gmail API, the Chrome Policy API, the Cloud Identity API, and
   the IAM Service Account Credentials API.
 * The principal of each request needs the `serviceusage.services.use` permission on the quota project, for example
   through the Service Usage Consumer role (`roles/serviceusage.serviceUsageConsumer`). With domain-wide delegation,
@@ -245,7 +245,7 @@ The provider does not read `GOOGLE_BILLING_PROJECT`. The `google` provider uses 
 The table shows the scopes that each resource and data source uses, from the API methods that the provider calls.
 Each scope has the `https://www.googleapis.com/auth/` prefix. Data sources also accept the `.readonly` form of the
 scopes they use, except `apps.groups.settings` and `cloud-platform` (use `cloud-identity.groups.readonly`). The default `oauth_scopes` list contains each scope in the table that
-is not in parentheses, except `admin.datatransfer`. It does not contain the alternatives in parentheses
+is not in parentheses, except `admin.datatransfer` and `apps.licensing`. It does not contain the alternatives in parentheses
 (`cloud-identity.groups` and `admin.directory.group.member`) or the `.readonly` forms. It also contains `admin.directory.customer`.
 
 | Resource or data source | API | Scopes |
@@ -259,6 +259,7 @@ is not in parentheses, except `admin.datatransfer`. It does not contain the alte
 | `googleworkspace_group_member` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
 | `googleworkspace_group_members` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
 | `googleworkspace_group_settings` | Groups Settings | `apps.groups.settings` |
+| `googleworkspace_license_assignment` | Enterprise License Manager, Admin SDK Directory | `apps.licensing`; `admin.directory.user` (or `admin.directory.user.readonly`) for `directory_user_id` (see [Scopes for license assignments](#scopes-for-license-assignments)); `admin.directory.customer` (or `admin.directory.customer.readonly`) if `customer_id` is `my_customer` |
 | `googleworkspace_org_unit` | Admin SDK Directory | `admin.directory.orgunit` |
 | `googleworkspace_role` | Admin SDK Directory | `admin.directory.rolemanagement` |
 | `googleworkspace_role_assignment` | Admin SDK Directory | `admin.directory.rolemanagement` |
@@ -274,6 +275,7 @@ is not in parentheses, except `admin.datatransfer`. It does not contain the alte
 | `data.googleworkspace_group_members` | Admin SDK Directory | `admin.directory.group` (or `admin.directory.group.member`) |
 | `data.googleworkspace_group_settings` | Groups Settings | `apps.groups.settings` |
 | `data.googleworkspace_groups` | Admin SDK Directory | `admin.directory.group` |
+| `data.googleworkspace_license_assignments` | Enterprise License Manager, Admin SDK Directory | `apps.licensing`; `admin.directory.customer` if `customer_id` is `my_customer` |
 | `data.googleworkspace_org_unit` | Admin SDK Directory | `admin.directory.orgunit` |
 | `data.googleworkspace_privileges` | Admin SDK Directory | `admin.directory.rolemanagement` |
 | `data.googleworkspace_role` | Admin SDK Directory | `admin.directory.rolemanagement` |
@@ -290,6 +292,7 @@ The provider calls these hosts:
 
 * `admin.googleapis.com` (Admin SDK Directory and Data Transfer)
 * `www.googleapis.com` (Groups Settings)
+* `licensing.googleapis.com` (Enterprise License Manager)
 * `gmail.googleapis.com`, `chromepolicy.googleapis.com`, and `cloudidentity.googleapis.com`
 * `iamcredentials.googleapis.com` and `oauth2.googleapis.com` when it uses `access_token` with `service_account`
 * for credentials, depending on their type:
@@ -328,7 +331,8 @@ Compliance settings such as data regions and Assured Controls are Admin console 
 
 Compliance scope differs by API and impact level:
 
-* Google lists the Admin SDK, which includes the Directory API and the Groups Settings API, as FedRAMP High. For DoD
+* Google lists the Admin SDK, which includes the Directory API, the Groups Settings API, and the Enterprise License
+  Manager API, as FedRAMP High. For DoD
   impact levels, check
   [Google's FedRAMP and DoD compliance scope page](https://docs.cloud.google.com/docs/security/compliance/fedramp-dod-compliance-scope)
   for your level.
