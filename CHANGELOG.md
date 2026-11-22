@@ -1,4 +1,4 @@
-## 0.13.0 (Unreleased)
+## 0.13.0 (November 22, 2026)
 
 BREAKING CHANGES:
 
