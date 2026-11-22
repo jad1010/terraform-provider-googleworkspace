@@ -1105,6 +1105,32 @@ func newChromePolicySchemaStore() *chromePolicySchemaStore {
 	return &chromePolicySchemaStore{schemas: map[string]*chromepolicy.GoogleChromePolicyVersionsV1PolicySchema{}}
 }
 
+// lookup returns the schema at path, and false if the store does not have it.
+func (s *chromePolicySchemaStore) lookup(path string) (*chromepolicy.GoogleChromePolicyVersionsV1PolicySchema, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	schemaDef, ok := s.schemas[path]
+	return schemaDef, ok
+}
+
+// addMissing adds the schemas, by path, that the store does not have yet. A schema that the store has is not replaced.
+func (s *chromePolicySchemaStore) addMissing(schemas map[string]*chromepolicy.GoogleChromePolicyVersionsV1PolicySchema) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for path, schemaDef := range schemas {
+		if _, ok := s.schemas[path]; !ok {
+			s.schemas[path] = schemaDef
+		}
+	}
+}
+
+// set stores the schema at path, in place of any entry.
+func (s *chromePolicySchemaStore) set(path string, schemaDef *chromepolicy.GoogleChromePolicyVersionsV1PolicySchema) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.schemas[path] = schemaDef
+}
+
 // chromePolicySchemaCache gets each policy schema from the API once. It keeps the schemas in the store of the client,
 // or in its own store if the client has none. It is safe for concurrent use.
 type chromePolicySchemaCache struct {
@@ -1136,16 +1162,24 @@ func newChromePolicySchemaCache(client *apiClient) (*chromePolicySchemaCache, di
 	}, diags
 }
 
-func (c *chromePolicySchemaCache) get(ctx context.Context, schemaName string) (*chromepolicy.GoogleChromePolicyVersionsV1PolicySchema, error) {
-	path := fmt.Sprintf("customers/%s/policySchemas/%s", c.customer, schemaName)
+// path returns the path of the schema named schemaName, which is also its key in the store.
+func (c *chromePolicySchemaCache) path(schemaName string) string {
+	return fmt.Sprintf("customers/%s/policySchemas/%s", c.customer, schemaName)
+}
 
-	c.store.mu.Lock()
-	schemaDef, ok := c.store.schemas[path]
-	c.store.mu.Unlock()
-	if ok {
+func (c *chromePolicySchemaCache) get(ctx context.Context, schemaName string) (*chromepolicy.GoogleChromePolicyVersionsV1PolicySchema, error) {
+	if schemaDef, ok := c.store.lookup(c.path(schemaName)); ok {
 		return schemaDef, nil
 	}
 
+	return c.refresh(ctx, schemaName)
+}
+
+// refresh gets the schema from the API, even if the store has it, and stores the result in place of any entry.
+func (c *chromePolicySchemaCache) refresh(ctx context.Context, schemaName string) (*chromepolicy.GoogleChromePolicyVersionsV1PolicySchema, error) {
+	path := c.path(schemaName)
+
+	var schemaDef *chromepolicy.GoogleChromePolicyVersionsV1PolicySchema
 	err := retryTimeDuration(ctx, time.Minute, func() error {
 		var retryErr error
 
@@ -1156,9 +1190,7 @@ func (c *chromePolicySchemaCache) get(ctx context.Context, schemaName string) (*
 		return nil, err
 	}
 
-	c.store.mu.Lock()
-	defer c.store.mu.Unlock()
-	c.store.schemas[path] = schemaDef
+	c.store.set(path, schemaDef)
 	return schemaDef, nil
 }
 
